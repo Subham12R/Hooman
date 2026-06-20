@@ -3,6 +3,8 @@ import asyncio
 from typing import List, Dict, Tuple
 from providers.registry import get_provider
 from database import update_session_summary
+from database import get_provider_config
+
 
 TOKEN_BUDGET = 32000  
 def estimate_tokens(text: str) -> int:
@@ -45,9 +47,16 @@ async def summarize_overflow(
     """
     if not overflow_messages:
         return
-        
+     
     try:
-        provider = get_provider()
+        config = get_provider_config()
+
+        if not config:
+            print("No active provider configured")
+            return
+
+        provider = get_provider(provider_config=config)
+
     except Exception as e:
         print(f"Error resolving provider for background summarization: {e}")
         return

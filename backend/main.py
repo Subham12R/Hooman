@@ -29,8 +29,10 @@ from database import (
     get_session_messages,
     get_sessions,
     get_usage_stats,
+    get_user_setting,
     init_db,
     log_usage,
+    mask_key,
     rename_folder,
     rename_session,
     save_message,
@@ -55,11 +57,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+backend_ready = False
 
 @app.on_event("startup")
-def startup_event():
+async def startup_event():
+    global backend_ready
     logger.info("Initializing database...")
     init_db()
+    backend_ready = True
+    # Run keyring migration in background so it never blocks the health endpoint
+    from database import _migrate_from_keyring
+    asyncio.create_task(asyncio.to_thread(_migrate_from_keyring))
 
 
 class CreateSessionRequest(BaseModel):
@@ -198,6 +206,32 @@ def api_get_user_settings():
         return {"error": str(e)}
 
 
+@app.get("/api/settings/integrations")
+def api_get_integrations():
+    try:
+        serper_key = get_user_setting("serper_api_key", "")
+        return {
+            "serper_configured": bool(serper_key),
+            "serper_api_key_masked": mask_key(serper_key),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.put("/api/settings/integrations")
+async def api_update_integrations(req: Request):
+    try:
+        body = await req.json()
+        key = body.get("serper_api_key", "").strip()
+        if key == "__clear__":
+            set_user_setting("serper_api_key", "")
+        elif key:
+            set_user_setting("serper_api_key", key)
+        return {"status": "ok"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.put("/api/settings/user")
 async def api_update_user_settings(req: Request):
     try:
@@ -297,7 +331,10 @@ def api_delete_provider(provider_id: str):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "ready": backend_ready,
+    }
 
 
 def parse_mode(user_text: str):

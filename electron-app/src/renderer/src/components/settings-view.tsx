@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { Camera, Loader2 } from 'lucide-react'
+import { Camera, Check, Loader2, X } from 'lucide-react'
 import { HugeiconsIcon } from '@hugeicons/react'
 import {
   Settings01Icon,
   UserIcon,
-  
   InformationCircleIcon,
 } from '@hugeicons/core-free-icons'
 
@@ -272,8 +271,110 @@ function BaseUrlGuideSection() {
 
         <div className="mt-2 p-3 bg-zinc-900/40 border border-zinc-800/60 rounded-lg">
           <p className="text-xs text-zinc-500 font-helvetica tracking-tighter leading-relaxed">
-            The API key field is stored securely in your OS keyring (Windows Credential Manager). It is never written to disk in plaintext.
+            API keys are stored in the local app database on your device and never transmitted to any server other than the provider you configure.
           </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Integrations section ───────────────────────────────────────────────────────
+
+function IntegrationsSection() {
+  const [serperKey, setSerperKey] = useState('')
+  const [configured, setConfigured] = useState(false)
+  const [maskedKey, setMaskedKey] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    fetch(`${HTTP_URL}/api/settings/integrations`)
+      .then((r) => r.json())
+      .then((d) => {
+        setConfigured(d.serper_configured)
+        setMaskedKey(d.serper_api_key_masked || '')
+      })
+      .catch(() => {})
+  }, [])
+
+  async function save() {
+    const key = serperKey.trim()
+    if (!key) return
+    setSaving(true)
+    try {
+      await fetch(`${HTTP_URL}/api/settings/integrations`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serper_api_key: key }),
+      })
+      setConfigured(true)
+      setMaskedKey(key.slice(0, 4) + '...' + key.slice(-4))
+      setSerperKey('')
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function clear() {
+    await fetch(`${HTTP_URL}/api/settings/integrations`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serper_api_key: '__clear__' }),
+    })
+    setConfigured(false)
+    setMaskedKey('')
+    setSerperKey('')
+  }
+
+  return (
+    <div className="border border-zinc-800 bg-[#1b1b1b]/40 rounded-lg p-6">
+      <div className="flex items-center gap-2 mb-5">
+        <h2 className="text-sm font-semibold text-zinc-100 font-helvetica tracking-tighter">Integrations</h2>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-center justify-between">
+          <label className="text-xs text-zinc-400 font-helvetica tracking-tighter">Serper API Key</label>
+          {configured && (
+            <span className="flex items-center gap-1 text-xs text-emerald-500 font-helvetica">
+              <Check className="w-3 h-3" />
+              {maskedKey}
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-zinc-600 font-helvetica tracking-tighter mb-2">
+          Powers live web search in Research mode ([Search: topic]). Free tier at serper.dev — 2,500 searches/month.
+        </p>
+        <div className="flex gap-2">
+          <input
+            ref={inputRef}
+            type="password"
+            value={serperKey}
+            onChange={(e) => setSerperKey(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && save()}
+            placeholder={configured ? 'Paste new key to replace...' : 'Paste your Serper API key'}
+            className="flex-1 bg-[#171717] border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600 font-mono"
+          />
+          <button
+            onClick={save}
+            disabled={saving || !serperKey.trim()}
+            className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg text-xs text-zinc-100 font-helvetica transition-colors"
+          >
+            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : saved ? 'Saved' : 'Save'}
+          </button>
+          {configured && (
+            <button
+              onClick={clear}
+              title="Remove key"
+              className="px-3 py-2 bg-zinc-900 hover:bg-red-950 border border-zinc-800 hover:border-red-900 rounded-lg text-zinc-500 hover:text-red-400 transition-colors"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -297,6 +398,7 @@ export function SettingsView({ onProfileChange }: SettingsViewProps) {
       </div>
 
       <ProfileSection onProfileChange={onProfileChange} />
+      <IntegrationsSection />
       <UsageSection />
       <BaseUrlGuideSection />
     </div>

@@ -61,7 +61,8 @@ async def _plan_queries(provider, query: str) -> list[str]:
 
 
 async def _search_serper(query: str) -> list[dict]:
-    serper_key = os.getenv("SERPER_API_KEY", "")
+    from database import get_user_setting
+    serper_key = get_user_setting("serper_api_key", "") or os.getenv("SERPER_API_KEY", "")
     if not serper_key:
         logger.warning("SERPER_API_KEY not set — skipping web search")
         return []
@@ -229,7 +230,6 @@ async def run_research_agent(websocket: WebSocket, session_id: str, request_id: 
     if refs_block and "References" not in final_report and "references" not in final_report.lower():
         final_report += f"\n\n## References\n{refs_block}"
 
-    save_message(str(uuid.uuid4()), session_id, "user", query)
     save_message(str(uuid.uuid4()), session_id, "assistant", final_report)
 
     await _emit(websocket, session_id, request_id, "synthesize", "completed")
@@ -248,7 +248,7 @@ async def _embed_report(session_id: str, report: str, embed_fn, save_chunk_fn):
         chunks = [p.strip() for p in report.split("\n\n") if len(p.strip()) > 80]
         for chunk_text in chunks:
             emb = embed_fn(chunk_text)
-            save_chunk_fn(str(uuid.uuid4()), session_id, chunk_text, emb)
+            save_chunk_fn(str(uuid.uuid4()), session_id, chunk_text, emb, source="research-report")
         logger.info(f"Embedded {len(chunks)} chunks for session {session_id}")
     except Exception as e:
         logger.warning(f"Embedding skipped: {e}")

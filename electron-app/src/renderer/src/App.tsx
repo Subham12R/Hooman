@@ -1,4 +1,5 @@
 ﻿import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { toast } from 'sonner'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { AppSidebar } from '@/components/app-sidebar'
@@ -197,8 +198,65 @@ function App(): ReactNode {
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const filterRef = useRef<HTMLDivElement>(null)
   const [showScrollButton, setShowScrollButton] = useState(false)
-
+  const [backendReady, setBackendReady] = useState(false)
+  const providerKeyToastShown = useRef(false)
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? providers[0]
+
+  // Toast: warn when active provider has no API key
+  useEffect(() => {
+    if (providers.length === 0 || providerKeyToastShown.current) return
+    providerKeyToastShown.current = true
+    const active = providers.find((p: Provider) => p.is_active) ?? providers[0]
+    if (active && active.provider_type !== 'ollama' && !active.api_key_masked) {
+      toast.warning(`${active.name} has no API key`, {
+        description: 'Add your API key to start chatting.',
+        action: { label: 'Manage Providers', onClick: () => setActiveView('providers') },
+        duration: Infinity,
+      })
+    }
+  }, [providers])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function poll(): Promise<void> {
+      while (!cancelled) {
+        try {
+          const res = await fetch(`${HTTP_URL}/health`)
+          const data = await res.json()
+          if (data.ready) {
+            setBackendReady(true)
+            if (!cancelled) {
+              fetchProviders()
+              fetchSessions(true)
+              fetchFolders()
+              fetchUserProfile()
+              // Check Serper key — inform user if research web search is unconfigured
+              fetch(`${HTTP_URL}/api/settings/integrations`)
+                .then((r) => r.json())
+                .then((d) => {
+                  if (!d.serper_configured) {
+                    toast('Research mode has no web search', {
+                      description: 'Add a Serper API key in Settings to enable live results.',
+                      action: { label: 'Open Settings', onClick: () => setActiveView('settings') },
+                      duration: 7000,
+                    })
+                  }
+                })
+                .catch(() => {})
+            }
+            return
+          }
+        } catch {
+          // backend not up yet
+        }
+        if (!cancelled) await new Promise<void>((resolve) => setTimeout(resolve, 500))
+      }
+    }
+
+    poll()
+    return () => { cancelled = true }
+  }, [])
 
   async function fetchSessions(autoSelectFirst = false): Promise<void> {
     try {
@@ -214,19 +272,36 @@ function App(): ReactNode {
     }
   }
 
-  async function fetchProviders(): Promise<void> {
-    try {
-      const res = await fetch(`${HTTP_URL}/api/providers`)
-      const data = await res.json()
-      if (!Array.isArray(data)) return
-      setProviders(data)
-      const active = data.find((provider: Provider) => provider.is_active) ?? data[0]
-      if (active && !selectedProviderId) setSelectedProviderId(active.id)
-    } catch (error) {
-      console.error('Error fetching providers:', error)
+ async function fetchProviders(retry = 0): Promise<void> {
+  try {
+    const res = await fetch(`${HTTP_URL}/api/providers`)
+
+    if (!res.ok) {
+      throw new Error("Provider API unavailable")
+    }
+
+    const data = await res.json()
+
+    if (!Array.isArray(data)) throw new Error(`Unexpected providers response: ${JSON.stringify(data)}`)
+
+    setProviders(data)
+
+    const active =
+      data.find((p: Provider) => p.is_active) ?? data[0]
+
+    if (active) {
+      setSelectedProviderId(active.id)
+    }
+  } catch (err) {
+    console.error(err)
+
+    if (retry < 10) {
+      setTimeout(() => {
+        fetchProviders(retry + 1)
+      }, 1000)
     }
   }
-
+}
   async function fetchFolders(): Promise<void> {
     try {
       const res = await fetch(`${HTTP_URL}/api/folders`)
@@ -242,15 +317,6 @@ function App(): ReactNode {
       if (!data.error) setUserProfile(data)
     } catch {}
   }
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    fetchProviders()
-    fetchSessions(true)
-    fetchFolders()
-    fetchUserProfile()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   useEffect(() => {
     function onClickOutside(e: MouseEvent): void {
@@ -704,6 +770,19 @@ function App(): ReactNode {
   })
 
   const isEmpty = messages.length === 0
+
+  if (!backendReady) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-zinc-950 text-zinc-100">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-5 h-5 border-2 border-zinc-700 border-t-zinc-300 rounded-full animate-spin" />
+          <p className="text-sm text-zinc-400">Starting Hooman...</p>
+        </div>
+      </div>
+    )
+  }
+
+
 
   return (
     <SidebarProvider className="dark:bg-[#171717] dark:text-zinc-100 bg-white text-zinc-900">

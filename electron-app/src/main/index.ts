@@ -2,6 +2,52 @@ import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import { spawn, ChildProcess } from 'child_process'
+import fs from 'fs'
+
+let backendProcess: ChildProcess | null = null
+
+function startBackend() {
+  const backendPath = app.isPackaged
+    ? join(process.resourcesPath, 'backend', 'hooman-server')
+    : join(process.cwd(), '../backend/dist/hooman-server')
+
+  console.log('Backend path:', backendPath)
+  console.log('Exists:', fs.existsSync(backendPath))
+
+  if (!fs.existsSync(backendPath)) {
+    console.error('Backend binary not found')
+    return
+  }
+
+  try {
+    backendProcess = spawn(backendPath, [], {
+      stdio: 'pipe',
+      env: {
+        ...process.env,
+        HOOMAN_DATA_DIR: app.getPath('userData'),
+      }
+    })
+
+    backendProcess.stdout?.on('data', (data) => {
+      console.log('[BACKEND]', data.toString())
+    })
+
+    backendProcess.stderr?.on('data', (data) => {
+      console.error('[BACKEND ERROR]', data.toString())
+    })
+
+    backendProcess.on('exit', (code) => {
+      console.log('Backend exited:', code)
+    })
+
+    backendProcess.on('error', (err) => {
+      console.error('Backend spawn error:', err)
+    })
+  } catch (err) {
+    console.error(err)
+  }
+}
 
 function createWindow(): void {
   // Create the browser window.
@@ -43,17 +89,18 @@ function createWindow(): void {
 app.whenReady().then(() => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
-
+  
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
   // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
-
+  
   // IPC test
   ipcMain.on('ping', () => console.log('pong'))
-
+  
+  startBackend()
   createWindow()
 
   app.on('activate', function () {
@@ -74,3 +121,8 @@ app.on('window-all-closed', () => {
 
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here.
+app.on('before-quit', () => {
+  if (backendProcess) {
+    backendProcess.kill()
+  }
+})

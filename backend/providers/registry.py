@@ -12,7 +12,7 @@ def get_provider(model_override: str = None, provider_config: dict | None = None
                 "model": model_override or provider_config["model"],
             })
 
-        if provider_type in ("ollama", "openai_compatible"):
+        if provider_type in ("ollama", "openai_compatible", "groq"):
             return OpenAICompatibleProvider({
                 "api_key": provider_config.get("api_key") or "not-needed",
                 "base_url": provider_config.get("base_url") or "http://localhost:11434/v1",

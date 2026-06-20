@@ -1,6 +1,7 @@
 import logging
 import os
 import sqlite3
+import sys
 from datetime import datetime, timezone
 
 import keyring
@@ -9,8 +10,14 @@ logger = logging.getLogger("hooman.db")
 
 KEYRING_SERVICE = "hooman-ai"
 
+_db_dir = (
+    os.environ.get("HOOMAN_DATA_DIR")
+    or (os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else None)
+    or os.path.dirname(os.path.abspath(__file__))
+)
+os.makedirs(_db_dir, exist_ok=True)
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "hooman.db")
+DB_PATH = os.path.join(_db_dir, "hooman.db")
 
 
 def get_db_connection():
@@ -23,25 +30,6 @@ def get_db_connection():
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-# ── Keyring helpers ────────────────────────────────────────────────────────────
-
-def _save_key(provider_id: str, api_key: str) -> None:
-    if api_key:
-        keyring.set_password(KEYRING_SERVICE, provider_id, api_key)
-
-def _get_key(provider_id: str) -> str:
-    try:
-        return keyring.get_password(KEYRING_SERVICE, provider_id) or ""
-    except Exception:
-        return ""
-
-def _delete_key(provider_id: str) -> None:
-    try:
-        keyring.delete_password(KEYRING_SERVICE, provider_id)
-    except Exception:
-        pass
 
 
 def init_db():
@@ -117,7 +105,6 @@ def init_db():
             pass
     conn.commit()
     conn.close()
-    _migrate_keys_to_keyring()
     seed_default_providers()
 
 
@@ -240,27 +227,40 @@ def _serialize_provider(row) -> dict:
         "name": row["name"],
         "provider_type": row["provider_type"],
         "base_url": row["base_url"],
-        "api_key_masked": mask_key(_get_key(row["id"])),
+        "api_key_masked": mask_key(row["api_key"] or ""),
         "model": row["model"],
         "is_active": bool(row["is_active"]),
         "created_at": row["created_at"],
     }
 
 
-def _migrate_keys_to_keyring():
-    """One-time migration: move plaintext api_keys from DB rows into OS keyring."""
-    conn = get_db_connection()
-    rows = conn.execute("SELECT id, api_key FROM providers WHERE api_key != ''").fetchall()
-    migrated = 0
-    for row in rows:
-        if row["api_key"] and not _get_key(row["id"]):
-            _save_key(row["id"], row["api_key"])
-            migrated += 1
-    if migrated:
-        conn.execute("UPDATE providers SET api_key = '' WHERE api_key != ''")
-        conn.commit()
-        logger.info(f"Migrated {migrated} provider key(s) to OS keyring")
-    conn.close()
+def _migrate_from_keyring() -> None:
+    """One-time: pull any keys stored in OS keyring into the api_key DB column."""
+    try:
+        conn = get_db_connection()
+        rows = conn.execute(
+            "SELECT id FROM providers WHERE api_key = '' OR api_key IS NULL"
+        ).fetchall()
+        if not rows:
+            conn.close()
+            return
+        migrated = 0
+        for row in rows:
+            try:
+                key = keyring.get_password(KEYRING_SERVICE, row["id"]) or ""
+                if key:
+                    conn.execute(
+                        "UPDATE providers SET api_key = ? WHERE id = ?", (key, row["id"])
+                    )
+                    migrated += 1
+            except Exception:
+                pass
+        if migrated:
+            conn.commit()
+            logger.info(f"Migrated {migrated} provider key(s) from OS keyring into DB")
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Keyring migration skipped: {e}")
 
 
 def seed_default_providers():
@@ -273,22 +273,6 @@ def seed_default_providers():
             "api_key": os.getenv("ANTHROPIC_API_KEY", ""),
             "model": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
         },
-        {
-            "id": "00000000-0000-0000-0000-000000000002",
-            "name": "Ollama",
-            "provider_type": "ollama",
-            "base_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
-            "api_key": "ollama",
-            "model": os.getenv("OLLAMA_MODEL", "qwen3:14b"),
-        },
-        {
-            "id": "00000000-0000-0000-0000-000000000003",
-            "name": "Groq",
-            "provider_type": "openai_compatible",
-            "base_url": "https://api.groq.com/openai/v1",
-            "api_key": os.getenv("GROQ_API_KEY", ""),
-            "model": os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-        },
     ]
     active_env = os.getenv("ACTIVE_PROVIDER", "ollama")
     conn = get_db_connection()
@@ -299,15 +283,20 @@ def seed_default_providers():
             INSERT OR IGNORE INTO providers (id, name, provider_type, base_url, api_key, model, is_active, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (item["id"], item["name"], item["provider_type"], item["base_url"], "", item["model"], is_active, now_iso()),
+            (item["id"], item["name"], item["provider_type"], item["base_url"],
+             item["api_key"], item["model"], is_active, now_iso()),
         )
-        if item.get("api_key") and not _get_key(item["id"]):
-            _save_key(item["id"], item["api_key"])
+        # If provider already exists with an empty key, backfill from env
+        if item["api_key"]:
+            conn.execute(
+                "UPDATE providers SET api_key = ? WHERE id = ? AND (api_key = '' OR api_key IS NULL)",
+                (item["api_key"], item["id"]),
+            )
     has_active = conn.execute("SELECT COUNT(*) FROM providers WHERE is_active = 1").fetchone()[0]
     if not has_active:
         conn.execute(
-            "UPDATE providers SET is_active = 1 WHERE id = ?",
-            ("00000000-0000-0000-0000-000000000002",),
+            "UPDATE providers SET is_active = 1 WHERE id = "
+            "(SELECT id FROM providers ORDER BY created_at ASC LIMIT 1)"
         )
     conn.commit()
     conn.close()
@@ -333,14 +322,11 @@ def get_provider_config(provider_id: str | None = None):
     conn.close()
     if not row:
         return None
-    config = dict(row)
-    config["api_key"] = _get_key(row["id"])
-    return config
+    return dict(row)
 
 
 def create_provider(provider_id: str, data: dict):
     api_key = data.get("api_key", "").strip()
-    _save_key(provider_id, api_key)
     conn = get_db_connection()
     if data.get("is_active"):
         conn.execute("UPDATE providers SET is_active = 0")
@@ -351,7 +337,7 @@ def create_provider(provider_id: str, data: dict):
             data["name"],
             data["provider_type"],
             data.get("base_url", ""),
-            "",
+            api_key,
             data["model"],
             1 if data.get("is_active") else 0,
             now_iso(),
@@ -362,24 +348,26 @@ def create_provider(provider_id: str, data: dict):
 
 
 def update_provider(provider_id: str, data: dict):
-    existing = get_provider_config(provider_id)
+    conn = get_db_connection()
+    existing = conn.execute("SELECT * FROM providers WHERE id = ?", (provider_id,)).fetchone()
     if not existing:
+        conn.close()
         return
     new_key = data.get("api_key", "").strip()
-    if new_key:
-        _save_key(provider_id, new_key)
+    # Keep existing key if the caller sent a blank (leave-unchanged sentinel)
+    final_key = new_key if new_key else (existing["api_key"] or "")
     make_active = bool(data.get("is_active"))
     # Sticky active: "Make active" promotes; unchecking does not demote
-    keep_active = bool(existing.get("is_active", False))
-    conn = get_db_connection()
+    keep_active = bool(existing["is_active"])
     if make_active:
         conn.execute("UPDATE providers SET is_active = 0")
     conn.execute(
-        "UPDATE providers SET name=?, provider_type=?, base_url=?, model=?, is_active=? WHERE id=?",
+        "UPDATE providers SET name=?, provider_type=?, base_url=?, api_key=?, model=?, is_active=? WHERE id=?",
         (
             data["name"],
             data["provider_type"],
             data.get("base_url", ""),
+            final_key,
             data["model"],
             1 if (make_active or keep_active) else 0,
             provider_id,
@@ -390,7 +378,6 @@ def update_provider(provider_id: str, data: dict):
 
 
 def delete_provider(provider_id: str):
-    _delete_key(provider_id)
     conn = get_db_connection()
     conn.execute("DELETE FROM providers WHERE id = ?", (provider_id,))
     has_active = conn.execute("SELECT COUNT(*) FROM providers WHERE is_active = 1").fetchone()[0]
