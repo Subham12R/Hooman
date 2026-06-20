@@ -5,29 +5,43 @@ import os
 import uuid
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+
+load_dotenv()  # must run before local imports so env vars (SERPER_API_KEY etc.) are available
+
+from fastapi import FastAPI, File, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from context_manager import build_context, summarize_overflow
 from database import (
+    create_folder,
     create_provider,
     create_session,
+    delete_folder,
     delete_provider,
     delete_session,
+    get_all_user_settings,
+    get_chunks_for_session,
+    get_folders,
     get_provider_config,
     get_providers,
     get_session,
     get_session_messages,
     get_sessions,
+    get_usage_stats,
     init_db,
+    log_usage,
+    rename_folder,
     rename_session,
     save_message,
+    set_session_folder,
+    set_user_setting,
+    toggle_pin_session,
     update_provider,
 )
 from providers.registry import get_provider
-
-load_dotenv()
+from research_agent import run_research_agent
+from file_processor import SUPPORTED_EXTENSIONS, chunk_text, extract_text
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hooman")
@@ -114,6 +128,133 @@ def list_session_messages(session_id: str):
         return {"error": str(e)}
 
 
+@app.put("/api/sessions/{session_id}/pin")
+def api_pin_session(session_id: str):
+    try:
+        pinned = toggle_pin_session(session_id)
+        return {"pinned": pinned}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.put("/api/sessions/{session_id}/folder")
+async def api_set_session_folder(session_id: str, req: Request):
+    try:
+        body = await req.json()
+        set_session_folder(session_id, body.get("folder_id"))
+        return {"status": "ok"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/folders")
+def api_get_folders():
+    try:
+        return get_folders()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/folders")
+async def api_create_folder(req: Request):
+    try:
+        body = await req.json()
+        folder_id = str(uuid.uuid4())
+        create_folder(folder_id, body.get("name", "New Folder"))
+        return {"status": "ok", "id": folder_id, "name": body.get("name", "New Folder")}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.put("/api/folders/{folder_id}")
+async def api_rename_folder(folder_id: str, req: Request):
+    try:
+        body = await req.json()
+        rename_folder(folder_id, body.get("name", ""))
+        return {"status": "ok"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.delete("/api/folders/{folder_id}")
+def api_delete_folder(folder_id: str):
+    try:
+        delete_folder(folder_id)
+        return {"status": "ok"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/settings/user")
+def api_get_user_settings():
+    try:
+        s = get_all_user_settings()
+        return {
+            "name": s.get("name", ""),
+            "email": s.get("email", ""),
+            "avatar": s.get("avatar", ""),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.put("/api/settings/user")
+async def api_update_user_settings(req: Request):
+    try:
+        body = await req.json()
+        for key in ("name", "email", "avatar"):
+            if key in body:
+                set_user_setting(key, body[key])
+        return {"status": "ok"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/stats/usage")
+def api_get_usage_stats():
+    try:
+        return get_usage_stats()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/sessions/{session_id}/upload")
+async def upload_file(session_id: str, file: UploadFile = File(...)):
+    from database import save_chunk
+    from embedder import embed
+    filename = file.filename or "file"
+    ext = ("." + filename.lower().rsplit(".", 1)[-1]) if "." in filename else ""
+    if ext not in SUPPORTED_EXTENSIONS:
+        return {"error": f"Unsupported type '{ext}'. Allowed: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"}
+    data = await file.read()
+    if len(data) > 20 * 1024 * 1024:
+        return {"error": "File too large (max 20 MB)"}
+    try:
+        text = extract_text(filename, data)
+        if not text.strip():
+            return {"error": "No text could be extracted from this file"}
+        chunks = chunk_text(text)
+        for chunk in chunks:
+            emb = embed(chunk)
+            save_chunk(str(uuid.uuid4()), session_id, chunk, emb, source=filename)
+        logger.info(f"Indexed {filename}: {len(chunks)} chunks for session {session_id}")
+        return {"filename": filename, "chunks": len(chunks)}
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"File upload error: {e}")
+        return {"error": "Failed to process file"}
+
+
+@app.get("/api/sessions/{session_id}/files")
+def list_session_files(session_id: str):
+    from database import get_session_sources
+    try:
+        return get_session_sources(session_id)
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/api/providers")
 def api_get_providers():
     try:
@@ -162,8 +303,8 @@ def health():
 def parse_mode(user_text: str):
     if user_text.startswith("[Search:") and user_text.endswith("]"):
         return "research", user_text[8:-1].strip()
-    if user_text.startswith("[Canvas:") and user_text.endswith("]"):
-        return "agent", user_text[8:-1].strip()
+    if user_text.startswith("[Plan:") and user_text.endswith("]"):
+        return "plan", user_text[6:-1].strip()
     if user_text.startswith("[Think:") and user_text.endswith("]"):
         return "think", user_text[7:-1].strip()
     return "chat", user_text
@@ -172,10 +313,14 @@ def parse_mode(user_text: str):
 def build_system_prompt(mode: str, existing_summary: str):
     system_content = (
         "You are Hooman AI, a helpful desktop assistant.\n\n"
+        "CRITICAL: Absolutely NO emojis or emoticons in any response. Never use 😊, 🙂, 🎉, ✅, ❌, or any other emoji.\n"
         "STRICT FORMATTING INSTRUCTIONS:\n"
         "- Do not use emojis under any circumstances.\n"
         "- Do not use em dashes under any circumstances.\n"
-        "Use clear sections and short paragraphs when the answer is complex."
+        "Use clear sections and short paragraphs when the answer is complex.\n\n"
+        "When indexed file content is provided below in the 'Relevant context' section, "
+        "use it to answer the user's questions about those files. "
+        "Do not say you cannot access files — the file content is right here in the context."
     )
 
     if mode == "research":
@@ -252,6 +397,7 @@ async def run_generation(websocket: WebSocket, payload: dict):
         "type": "accepted",
         "session_id": session_id,
         "request_id": request_id,
+        "mode": mode,
     })
 
     db_messages = get_session_messages(session_id)
@@ -260,6 +406,37 @@ async def run_generation(websocket: WebSocket, payload: dict):
     active_messages, overflow_messages = build_context(db_messages, existing_summary)
     provider_config = get_provider_config(provider_id)
     provider = get_provider(model, provider_config)
+
+    if mode in ("plan", "research"):
+        try:
+            await run_research_agent(websocket, session_id, request_id, clean_text, provider)
+        except asyncio.CancelledError:
+            await websocket.send_json({"type": "stopped", "session_id": session_id, "request_id": request_id})
+            raise
+        except Exception as e:
+            logger.error(f"Research agent error: {e}")
+            await websocket.send_json({"type": "error", "message": str(e), "session_id": session_id, "request_id": request_id})
+        return
+
+    rag_context = ""
+    if mode in ("chat", "think"):
+        try:
+            from embedder import cosine_similarity, embed
+            query_emb = embed(clean_text)
+            raw_chunks = get_chunks_for_session(session_id)
+            if raw_chunks:
+                scored = [
+                    (cosine_similarity(query_emb, c["embedding"]), c["content"])
+                    for c in raw_chunks
+                    if c["embedding"]
+                ]
+                top_chunks = [c for _, c in sorted(scored, reverse=True)[:5]]
+                if top_chunks:
+                    sources = sorted(set(c["source"] for c in raw_chunks if c.get("source")))
+                    header = f"Indexed files: {', '.join(sources)}\n\n" if sources else ""
+                    rag_context = header + "Relevant context from this session:\n\n" + "\n\n---\n\n".join(top_chunks)
+        except Exception as e:
+            logger.warning(f"RAG retrieval skipped: {e}")
 
     steps = workflow_steps(mode)
     for index, step in enumerate(steps):
@@ -279,7 +456,11 @@ async def run_generation(websocket: WebSocket, payload: dict):
         if index < len(steps) - 1:
             await asyncio.sleep(0.15)
 
-    prompt_context = [{"role": "system", "content": build_system_prompt(mode, existing_summary)}] + [
+    system_prompt = build_system_prompt(mode, existing_summary)
+    if rag_context:
+        system_prompt += f"\n\n{rag_context}"
+
+    prompt_context = [{"role": "system", "content": system_prompt}] + [
         {"role": m["role"], "content": m["content"]}
         for m in active_messages
     ]
@@ -296,6 +477,14 @@ async def run_generation(websocket: WebSocket, payload: dict):
             })
 
         save_message(str(uuid.uuid4()), session_id, "assistant", full_response)
+
+        # Track usage (chars; UI converts to ~tokens at 4 chars/token)
+        input_chars = sum(len(m.get("content", "")) for m in prompt_context)
+        try:
+            log_usage(str(uuid.uuid4()), session_id, provider.model, provider_config.get("provider_type", "unknown") if provider_config else "unknown", input_chars, len(full_response))
+        except Exception:
+            pass
+
         await websocket.send_json({
             "type": "done",
             "session_id": session_id,

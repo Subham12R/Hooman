@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@theme-toggles/react/styles.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -38,6 +39,23 @@
   --accent-foreground: #ffffff;
   --border: #2e3033;
   --muted: #2e3033;
+}
+
+.light {
+  --sidebar: #ffffff;
+  --sidebar-foreground: hsl(0, 0%, 20%);
+  --sidebar-primary: hsl(0 0% 95%);
+  --sidebar-primary-foreground: hsl(0 0% 10%);
+  --sidebar-accent: hsl(240 5% 90%);
+  --sidebar-accent-foreground: hsl(0 0% 10%);
+  --sidebar-border: hsl(0, 0%, 85%);
+  --sidebar-ring: hsl(0 0% 60%);
+  --popover: #ffffff;
+  --popover-foreground: #18181b;
+  --accent: #e4e4e7;
+  --accent-foreground: #18181b;
+  --border: #e4e4e7;
+  --muted: #e4e4e7;
 }
 
 .dark {

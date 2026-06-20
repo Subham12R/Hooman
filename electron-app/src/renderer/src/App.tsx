@@ -1,11 +1,20 @@
 ﻿import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { AppSidebar } from '@/components/app-sidebar'
 import { ModelSelector, type ProviderOption } from '@/components/model-selector'
 import { PromptInputBox } from '@/components/ui/ai-prompt-box'
 import { SidebarInset, SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar'
 import { Spinner, type ThinkingStep } from '@renderer/components/spinner'
-import { Check, ChevronDown, PenBox, Pencil, Plus, Search, Trash2 } from 'lucide-react'
-import { HugeiconsIcon } from '@hugeicons/core-free-icons';
+import { ResearchTrace, type TraceEvent } from '@renderer/components/research-trace'
+import { SettingsView } from '@renderer/components/settings-view'
+import { Check, ChevronDown, ChevronLeft, Copy, FolderOpen, FolderPlus, MoreVertical, Pencil, Pin, Plus, Search, Server, Share2, Trash2, X } from 'lucide-react'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 
 type Message = {
   from: 'user' | 'assistant'
@@ -14,16 +23,34 @@ type Message = {
   requestId?: string
   streaming?: boolean
   stopped?: boolean
+  startedAt?: number
+  durationMs?: number
   steps?: ThinkingStep[]
+  traces?: TraceEvent[]
+  mode?: string
 }
 
 type Session = {
   id: string
   title: string
+  pinned?: boolean
+  folder_id?: string | null
   created_at?: string
   last_message_at?: string
   message_count?: number
   summary?: string
+}
+
+type Folder = {
+  id: string
+  name: string
+  position: number
+}
+
+type UserProfile = {
+  name: string
+  email: string
+  avatar: string
 }
 
 type Provider = ProviderOption & {
@@ -45,7 +72,7 @@ const emptyProviderForm = {
   name: '',
   provider_type: 'ollama',
   model: '',
-  base_url: '',
+  base_url: 'http://localhost:11434/v1',
   api_key: '',
   is_active: false,
 }
@@ -74,15 +101,52 @@ function parseDbMessage(msg: DbMessage): Message {
   }
 }
 
-function renderMessageText(text: string): ReactNode[] {
-  return text
-    .split(/\n{2,}/)
-    .filter((part) => part.trim().length > 0)
-    .map((part, index) => (
-      <p key={index} className="mb-3 last:mb-0 whitespace-pre-wrap break-words">
-        {part.trim()}
-      </p>
-    ))
+const markdownComponents = {
+  p: ({ children }: { children?: ReactNode }) => (
+    <p className="mb-2 last:mb-0 text-zinc-300 leading-relaxed">{children}</p>
+  ),
+  h1: ({ children }: { children?: ReactNode }) => (
+    <h1 className="text-zinc-100 font-semibold font-helvetica tracking-tight text-base mb-1 mt-3 first:mt-0">{children}</h1>
+  ),
+  h2: ({ children }: { children?: ReactNode }) => (
+    <h2 className="text-zinc-100 font-semibold font-helvetica tracking-tight text-sm mb-1 mt-3 first:mt-0">{children}</h2>
+  ),
+  h3: ({ children }: { children?: ReactNode }) => (
+    <h3 className="text-zinc-200 font-semibold font-helvetica tracking-tight text-sm mb-1 mt-2 first:mt-0">{children}</h3>
+  ),
+  ul: ({ children }: { children?: ReactNode }) => (
+    <ul className="pl-4 mb-2 space-y-0.5 text-zinc-300 list-disc">{children}</ul>
+  ),
+  ol: ({ children }: { children?: ReactNode }) => (
+    <ol className="pl-4 mb-2 space-y-0.5 text-zinc-300 list-decimal">{children}</ol>
+  ),
+  li: ({ children }: { children?: ReactNode }) => (
+    <li className="text-zinc-300">{children}</li>
+  ),
+  strong: ({ children }: { children?: ReactNode }) => (
+    <strong className="text-zinc-100 font-semibold">{children}</strong>
+  ),
+  em: ({ children }: { children?: ReactNode }) => (
+    <em className="text-zinc-300 italic">{children}</em>
+  ),
+  code: ({ children, className }: { children?: ReactNode; className?: string }) => {
+    const isBlock = className?.startsWith('language-')
+    return isBlock ? (
+      <code className="block bg-zinc-900 border border-zinc-800 rounded-lg p-3 text-xs font-mono overflow-x-auto text-zinc-300 my-2">{children}</code>
+    ) : (
+      <code className="bg-zinc-800 text-zinc-200 rounded px-1 py-0.5 text-xs font-mono">{children}</code>
+    )
+  },
+  pre: ({ children }: { children?: ReactNode }) => (
+    <pre className="my-2 overflow-x-auto">{children}</pre>
+  ),
+  a: ({ children, href }: { children?: ReactNode; href?: string }) => (
+    <a href={href} className="text-zinc-400 underline underline-offset-2 hover:text-zinc-200 transition-colors" target="_blank" rel="noreferrer">{children}</a>
+  ),
+  blockquote: ({ children }: { children?: ReactNode }) => (
+    <blockquote className="border-l-2 border-zinc-700 pl-3 my-2 text-zinc-400 italic">{children}</blockquote>
+  ),
+  hr: () => <hr className="border-zinc-800 my-3" />,
 }
 
 function upsertAssistantMessage(messages: Message[], requestId: string, patch: Partial<Message>): Message[] {
@@ -113,7 +177,7 @@ function App(): ReactNode {
   const [providers, setProviders] = useState<Provider[]>([])
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null)
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
-  const [activeView, setActiveView] = useState<'chat' | 'chats-list' | 'providers'>('chat')
+  const [activeView, setActiveView] = useState<'chat' | 'chats-list' | 'providers' | 'settings'>('chat')
   const [isLoading, setIsLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [isSelectionMode, setIsSelectionMode] = useState(false)
@@ -122,13 +186,17 @@ function App(): ReactNode {
   const [filterDropdownOpen, setFilterDropdownOpen] = useState(false)
   const [providerForm, setProviderForm] = useState(emptyProviderForm)
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null)
+  const [folders, setFolders] = useState<Folder[]>([])
+  const [userProfile, setUserProfile] = useState<UserProfile>({ name: '', email: '', avatar: '' })
 
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const currentSessionIdRef = useRef<string | null>(null)
   const activeRequestIdRef = useRef<string | null>(null)
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const filterRef = useRef<HTMLDivElement>(null)
+  const [showScrollButton, setShowScrollButton] = useState(false)
 
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? providers[0]
 
@@ -159,10 +227,28 @@ function App(): ReactNode {
     }
   }
 
+  async function fetchFolders(): Promise<void> {
+    try {
+      const res = await fetch(`${HTTP_URL}/api/folders`)
+      const data = await res.json()
+      if (Array.isArray(data)) setFolders(data)
+    } catch {}
+  }
+
+  async function fetchUserProfile(): Promise<void> {
+    try {
+      const res = await fetch(`${HTTP_URL}/api/settings/user`)
+      const data = await res.json()
+      if (!data.error) setUserProfile(data)
+    } catch {}
+  }
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchProviders()
     fetchSessions(true)
+    fetchFolders()
+    fetchUserProfile()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -195,12 +281,30 @@ function App(): ReactNode {
         if (data.type === 'accepted') {
           currentSessionIdRef.current = targetId
           setCurrentSessionId(targetId)
+          if (data.mode) {
+            updateAssistant(targetId, requestId, { mode: data.mode })
+          }
           fetchSessions(false)
           return
         }
 
         if (data.type === 'workflow') {
           updateAssistant(targetId, requestId, { steps: data.steps, streaming: true })
+          return
+        }
+
+        if (data.type === 'trace') {
+          setMessagesCache((cache) => {
+            const prev = cache[targetId] || []
+            const existing = prev.find((msg) => msg.from === 'assistant' && msg.requestId === requestId)
+            const prevTraces = existing?.traces || []
+            const nextMessages = upsertAssistantMessage(prev, requestId, {
+              traces: [...prevTraces, data],
+              streaming: true,
+            })
+            if (targetId === currentSessionIdRef.current) setMessages(nextMessages)
+            return { ...cache, [targetId]: nextMessages }
+          })
           return
         }
 
@@ -263,7 +367,10 @@ function App(): ReactNode {
   }, [])
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const container = messagesContainerRef.current
+    if (container && container.scrollTop + container.clientHeight >= container.scrollHeight - 60) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
   }, [messages, isLoading])
 
   function updateAssistant(sessionId: string, requestId: string, patch: Partial<Message>): void {
@@ -282,11 +389,13 @@ function App(): ReactNode {
       const prev = cache[sessionId] || []
       const existing = prev.find((msg) => msg.from === 'assistant' && msg.requestId === requestId)
       const text = stopped && !existing?.text ? 'Stopped.' : existing?.text || ''
+      const durationMs = existing?.startedAt ? Date.now() - existing.startedAt : undefined
       const nextMessages = upsertAssistantMessage(prev, requestId, {
         text,
         rawText: text,
         streaming: false,
         stopped,
+        durationMs,
         steps: steps ?? existing?.steps,
       })
       if (sessionId === currentSessionIdRef.current) setMessages(nextMessages)
@@ -380,7 +489,72 @@ function App(): ReactNode {
     setIsSelectionMode(false)
   }
 
-  function handleSend(text: string): void {
+  async function handlePinSession(sessionId: string): Promise<void> {
+    const res = await fetch(`${HTTP_URL}/api/sessions/${sessionId}/pin`, { method: 'PUT' })
+    const data = await res.json()
+    setSessions((prev) =>
+      prev
+        .map((s) => (s.id === sessionId ? { ...s, pinned: data.pinned } : s))
+        .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0))
+    )
+  }
+
+  async function handleSetSessionFolder(sessionId: string, folderId: string | null): Promise<void> {
+    await fetch(`${HTTP_URL}/api/sessions/${sessionId}/folder`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder_id: folderId }),
+    })
+    setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, folder_id: folderId } : s)))
+  }
+
+  async function handleCreateFolder(name: string): Promise<void> {
+    const res = await fetch(`${HTTP_URL}/api/folders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    const data = await res.json()
+    if (!data.error) setFolders((prev) => [...prev, { id: data.id, name: data.name, position: prev.length }])
+  }
+
+  async function handleDeleteFolder(folderId: string): Promise<void> {
+    await fetch(`${HTTP_URL}/api/folders/${folderId}`, { method: 'DELETE' })
+    setFolders((prev) => prev.filter((f) => f.id !== folderId))
+    setSessions((prev) => prev.map((s) => (s.folder_id === folderId ? { ...s, folder_id: null } : s)))
+  }
+
+  async function handleRenameFolder(folderId: string, name: string): Promise<void> {
+    await fetch(`${HTTP_URL}/api/folders/${folderId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+    setFolders((prev) => prev.map((f) => (f.id === folderId ? { ...f, name } : f)))
+  }
+
+  async function handleUploadDoc(file: File): Promise<{ chunks: number; filename: string }> {
+    let sessionId = currentSessionIdRef.current
+    if (!sessionId) {
+      sessionId = crypto.randomUUID()
+      currentSessionIdRef.current = sessionId
+      setCurrentSessionId(sessionId)
+      await fetch(`${HTTP_URL}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: sessionId, title: file.name.replace(/\.[^.]+$/, '') }),
+      })
+      fetchSessions(false)
+    }
+    const form = new FormData()
+    form.append('file', file)
+    const resp = await fetch(`${HTTP_URL}/api/sessions/${sessionId}/upload`, { method: 'POST', body: form })
+    const data = await resp.json()
+    if (data.error) throw new Error(data.error)
+    return { chunks: data.chunks, filename: data.filename }
+  }
+
+  function handleSend(text: string, _files?: File[], docInfo?: { name: string; chunks: number }): void {
     const trimmed = text.trim()
     if (!trimmed || !selectedProvider) return
 
@@ -391,16 +565,37 @@ function App(): ReactNode {
     setCurrentSessionId(sessionId)
     setIsLoading(true)
 
-    const userMessage: Message = { from: 'user', text: trimmed }
+    let nextMessages = [...messages]
+
+    if (docInfo) {
+      const fileMsg: Message = { from: 'user', text: `Uploaded file: ${docInfo.name} (${docInfo.chunks} chunks indexed)` }
+      nextMessages.push(fileMsg)
+    }
+
+    const detectedMode = trimmed.startsWith('[Plan:') ? 'plan'
+      : trimmed.startsWith('[Search:') ? 'research'
+      : trimmed.startsWith('[Think:') ? 'think'
+      : 'chat'
+    const isResearchMode = detectedMode === 'plan' || detectedMode === 'research'
+
+    const displayText = trimmed.startsWith('[Plan:') ? trimmed.slice(6, -1).trim()
+      : trimmed.startsWith('[Search:') ? trimmed.slice(8, -1).trim()
+      : trimmed.startsWith('[Think:') ? trimmed.slice(7, -1).trim()
+      : trimmed
+
+    const userMessage: Message = { from: 'user', text: displayText }
     const assistantMessage: Message = {
       from: 'assistant',
       text: '',
       rawText: '',
       requestId,
+      startedAt: Date.now(),
       streaming: true,
-      steps: [{ id: 'queued', text: 'Queued request', status: 'running' }],
+      mode: detectedMode,
+      steps: !isResearchMode ? [] : undefined,
+      traces: isResearchMode ? [] : undefined,
     }
-    const nextMessages = [...messages, userMessage, assistantMessage]
+    nextMessages.push(userMessage, assistantMessage)
     setMessages(nextMessages)
     setMessagesCache((cache) => ({ ...cache, [sessionId]: nextMessages }))
 
@@ -408,13 +603,13 @@ function App(): ReactNode {
       fetch(`${HTTP_URL}/api/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: sessionId, title: trimmed.slice(0, 40) || 'New Chat' }),
+        body: JSON.stringify({ id: sessionId, title: displayText.slice(0, 40) || 'New Chat' }),
       }).then(() => fetchSessions(false))
     }
 
     const activeSession = sessions.find((session) => session.id === sessionId)
     if (activeSession?.title === 'New Chat') {
-      handleRenameSession(sessionId, trimmed.slice(0, 40))
+      handleRenameSession(sessionId, displayText.slice(0, 40))
     }
 
     if (wsRef.current?.readyState !== WebSocket.OPEN) {
@@ -511,36 +706,135 @@ function App(): ReactNode {
   const isEmpty = messages.length === 0
 
   return (
-    <SidebarProvider className="bg-[#171717] text-zinc-100">
+    <SidebarProvider className="dark:bg-[#171717] dark:text-zinc-100 bg-white text-zinc-900">
       <AppSidebar
         sessions={sessions}
         currentSessionId={currentSessionId}
         activeView={activeView}
         streamingSessionIds={streamingSessionIds}
+        userProfile={userProfile}
         onSelectSession={handleSelectSession}
         onCreateSession={handleCreateSession}
         onRenameSession={handleRenameSession}
         onDeleteSession={handleDeleteSession}
+        onPinSession={handlePinSession}
         onShowChatsList={() => {
           setActiveView('chats-list')
           setIsSelectionMode(false)
           setSelectedSessions(new Set())
         }}
         onShowProviders={() => setActiveView('providers')}
+        onShowSettings={() => setActiveView('settings')}
       />
 
-      <SidebarInset className="bg-[#171717] text-zinc-100 h-screen overflow-hidden flex flex-col">
-        <header className="flex h-12 shrink-0 items-center justify-between px-4 bg-[#171717]/10 backdrop-blur-md">
-          <div className="flex items-center gap-4">
+      <SidebarInset className="dark:bg-[#171717] dark:text-zinc-100 bg-white text-zinc-900 h-screen overflow-hidden flex flex-col">
+        <header className="flex h-12 shrink-0 items-center justify-between px-4 border-b dark:border-zinc-900 border-zinc-200 dark:bg-[#171717]/90 bg-white/90 backdrop-blur-md">
+          <div className="flex items-center gap-3">
             <SidebarTrigger />
-            <ModelSelector providers={providers} value={selectedProviderId} onChange={setSelectedProviderId} />
+            {activeView === 'chat' && (
+              <ModelSelector providers={providers} value={selectedProviderId} onChange={setSelectedProviderId} />
+            )}
+            {(activeView === 'chats-list' || activeView === 'providers') && (
+              <span className="text-sm font-semibold font-helvetica tracking-tight dark:text-zinc-200 text-zinc-800">
+                {activeView === 'chats-list' ? 'Chats' : 'Providers'}
+              </span>
+            )}
           </div>
-          <button
-            onClick={() => setActiveView('providers')}
-            className="text-xs text-zinc-500 hover:text-zinc-200 font-helvetica tracking-tighter transition-colors"
-          >
-            <PenBox className="w-4 h-4 mr-1 inline-block" />
-          </button>
+          <div className="flex items-center gap-2">
+            {activeView === 'chat' && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/60 transition-colors">
+                    <MoreVertical className="w-4 h-4" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-48">
+                  <DropdownMenuItem onClick={() => {
+                    const text = messages.map(m => `${m.from === 'user' ? 'You' : 'Assistant'}: ${m.text}`).join('\n\n')
+                    navigator.clipboard.writeText(text)
+                  }}>
+                    <Copy className="w-4 h-4" />
+                    Copy whole chat
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={async () => {
+                    const text = messages.map(m => `${m.from === 'user' ? 'You' : 'Assistant'}: ${m.text}`).join('\n\n')
+                    if (navigator.share) {
+                      await navigator.share({ title: 'Hooman Chat', text })
+                    } else {
+                      navigator.clipboard.writeText(text)
+                    }
+                  }}>
+                    <Share2 className="w-4 h-4" />
+                    Share
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setActiveView('providers')}>
+                    <Server className="w-4 h-4" />
+                    Manage provider
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+            {activeView === 'chats-list' && (
+              <>
+                <div className="relative" ref={filterRef}>
+                  <button
+                    onClick={() => setFilterDropdownOpen(!filterDropdownOpen)}
+                    className="flex items-center gap-1.5 border-2 border-zinc-800/60 bg-zinc-900/40 shadow-md rounded-lg px-3 py-1.5 text-xs text-zinc-300 hover:text-zinc-100 hover:border-zinc-700/80 transition-all font-helvetica tracking-tighter"
+                  >
+                    <span>{filterMode}</span>
+                    <ChevronDown className="w-3 h-3" />
+                  </button>
+                  {filterDropdownOpen && (
+                    <div className="absolute right-0 top-full mt-2 w-28 rounded-xl bg-[#1a1a1a] border-2 border-zinc-800/60 shadow-2xl z-50 p-1">
+                      {(['All', 'Active', 'Empty'] as const).map((option) => (
+                        <button
+                          key={option}
+                          onClick={() => { setFilterMode(option); setFilterDropdownOpen(false) }}
+                          className={`w-full text-left px-3 py-2 text-xs rounded-lg transition-colors font-helvetica ${filterMode === option ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-800/60'}`}
+                        >
+                          {option}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {isSelectionMode ? (
+                  <>
+                    <button
+                      onClick={handleDeleteSelected}
+                      disabled={selectedSessions.size === 0}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-red-950/60 text-red-200 border-2 border-red-900/50 disabled:opacity-40 shadow-md transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Delete ({selectedSessions.size})
+                    </button>
+                    <button
+                      onClick={() => { setIsSelectionMode(false); setSelectedSessions(new Set()) }}
+                      className="px-3 py-1.5 text-xs rounded-lg border-2 border-zinc-800/60 text-zinc-300 hover:text-zinc-100 hover:border-zinc-700 shadow-md transition-all"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => setIsSelectionMode(true)}
+                    className="px-3 py-1.5 text-xs rounded-lg border-2 border-zinc-800/60 text-zinc-300 hover:text-zinc-100 hover:border-zinc-700 shadow-md transition-all font-helvetica tracking-tighter"
+                  >
+                    Select
+                  </button>
+                )}
+              </>
+            )}
+            {activeView === 'providers' && (
+              <button
+                onClick={() => setActiveView('chat')}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border-2 border-zinc-800/60 text-zinc-300 hover:text-zinc-100 hover:border-zinc-700 shadow-md transition-all font-helvetica tracking-tighter"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+                Back
+              </button>
+            )}
+          </div>
         </header>
 
         {activeView === 'providers' ? (
@@ -557,9 +851,12 @@ function App(): ReactNode {
             onEdit={startProviderEdit}
             onDelete={removeProvider}
           />
+        ) : activeView === 'settings' ? (
+          <SettingsView onProfileChange={setUserProfile} />
         ) : activeView === 'chats-list' ? (
           <ChatsView
             filteredSessions={filteredSessions}
+            folders={folders}
             selectedSessions={selectedSessions}
             isSelectionMode={isSelectionMode}
             filterMode={filterMode}
@@ -576,40 +873,75 @@ function App(): ReactNode {
             onToggleSessionSelection={toggleSessionSelection}
             onRenameSession={handleRenameSession}
             onDeleteSession={handleDeleteSession}
+            onPinSession={handlePinSession}
+            onSetSessionFolder={handleSetSessionFolder}
+            onCreateFolder={handleCreateFolder}
+            onDeleteFolder={handleDeleteFolder}
+            onRenameFolder={handleRenameFolder}
           />
         ) : isEmpty ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-6 px-4">
             <p className="font-helvetica text-2xl tracking-tighter text-zinc-300">What can I do for you?</p>
-            <div className="w-full max-w-2xl">
+            <div className="w-full max-w-3xl">
               <PromptInputBox
                 onSend={handleSend}
                 placeholder={selectedProvider ? 'Message Hooman...' : 'Add a provider first...'}
                 isLoading={isLoading}
                 onStop={handleStop}
+                onUploadDoc={handleUploadDoc}
               />
             </div>
           </div>
         ) : (
           <>
-            <div className="flex flex-1 flex-col overflow-y-auto no-scrollbar gap-3 px-4 py-4 mx-auto w-full max-w-2xl">
+            <div
+              ref={messagesContainerRef}
+              onScroll={() => {
+                const el = messagesContainerRef.current
+                if (!el) return
+                const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 60
+                setShowScrollButton(!atBottom)
+              }}
+              className="flex flex-1 flex-col overflow-y-auto no-scrollbar gap-3 px-4 py-4 mx-auto w-full max-w-3xl"
+            >
               {messages.map((msg, index) => {
                 const isAssistant = msg.from === 'assistant'
                 return (
                   <div
                     key={`${msg.requestId || index}-${msg.from}`}
                     className={`max-w-xl rounded-xl px-4 py-2.5 text-sm leading-relaxed font-helvetica ${
-                      msg.from === 'user' ? 'ml-auto text-zinc-100 bg-zinc-900/30' : 'text-zinc-300'
+                      msg.from === 'user' ? 'ml-auto text-zinc-100 bg-zinc-800/40' : 'bg-zinc-600/10 text-zinc-300'
                     }`}
                   >
-                    {isAssistant && msg.steps && (
+                    {isAssistant && (msg.mode === 'plan' || msg.mode === 'research') && msg.traces && (
+                      <div className="mb-2">
+                        <ResearchTrace traces={msg.traces} isStreaming={!!msg.streaming} />
+                      </div>
+                    )}
+                    {isAssistant && msg.mode !== 'plan' && msg.mode !== 'research' && msg.steps && (
                       <div className="mb-1 pb-2">
                         <Spinner steps={msg.steps} isCollapsedByDefault={!msg.streaming} />
                       </div>
                     )}
                     {msg.text ? (
-                      <div className="space-y-0">{renderMessageText(msg.text)}</div>
+                      isAssistant ? (
+                        <div className="markdown-body">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                            {msg.text}
+                          </ReactMarkdown>
+                        </div>
+                      ) : (
+                        <p className="whitespace-pre-wrap break-words text-zinc-100">{msg.text}</p>
+                      )
                     ) : (
-                      <span className="text-xs text-zinc-600">Waiting for response...</span>
+                      <span className="text-md text-zinc-600"></span>
+                    )}
+                    {isAssistant && msg.durationMs != null && !msg.streaming && (
+                      <div className="mt-2 text-[11px] text-zinc-600 font-helvetica">
+                        {msg.durationMs < 60000
+                          ? `${(msg.durationMs / 1000).toFixed(1)}s`
+                          : `${Math.floor(msg.durationMs / 60000)}m ${Math.round((msg.durationMs % 60000) / 1000)}s`}
+                      </div>
                     )}
                   </div>
                 )
@@ -617,13 +949,25 @@ function App(): ReactNode {
               <div ref={messagesEndRef} />
             </div>
 
+            {showScrollButton && (
+              <div className="absolute bottom-32 left-1/2 -translate-x-1/2 z-50 pointer-events-none">
+                <button
+                  onClick={() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })}
+                  className="pointer-events-auto flex items-center gap-1.5 px-2 py-2 text-xs cursor-pointer dark:bg-zinc-900/90 bg-white/90 dark:text-zinc-400 text-zinc-600 dark:hover:text-zinc-200 hover:text-zinc-900 rounded-full border dark:border-zinc-700 border-zinc-300 shadow-lg backdrop-blur-sm transition-all"
+                >
+                  <ChevronDown className="w-3 h-3" />
+                  
+                </button>
+              </div>
+            )}
             <div className="shrink-0 px-4 pb-4">
-              <div className="mx-auto w-full max-w-2xl">
+              <div className="mx-auto w-full max-w-3xl">
                 <PromptInputBox
                   onSend={handleSend}
                   placeholder={selectedProvider ? 'Message Hooman...' : 'Add a provider first...'}
                   isLoading={isLoading}
                   onStop={handleStop}
+                  onUploadDoc={handleUploadDoc}
                 />
               </div>
             </div>
@@ -636,6 +980,7 @@ function App(): ReactNode {
 
 function ChatsView({
   filteredSessions,
+  folders,
   selectedSessions,
   isSelectionMode,
   filterMode,
@@ -652,8 +997,14 @@ function ChatsView({
   onToggleSessionSelection,
   onRenameSession,
   onDeleteSession,
+  onPinSession,
+  onSetSessionFolder,
+  onCreateFolder,
+  onDeleteFolder,
+  onRenameFolder,
 }: {
   filteredSessions: Session[]
+  folders: Folder[]
   selectedSessions: Set<string>
   isSelectionMode: boolean
   filterMode: 'All' | 'Active' | 'Empty'
@@ -670,140 +1021,123 @@ function ChatsView({
   onToggleSessionSelection: (id: string) => void
   onRenameSession: (id: string, title: string) => void
   onDeleteSession: (id: string) => void
+  onPinSession: (id: string) => void
+  onSetSessionFolder: (id: string, folderId: string | null) => void
+  onCreateFolder: (name: string) => void
+  onDeleteFolder: (id: string) => void
+  onRenameFolder: (id: string, name: string) => void
 }) {
+  const [activeFolderId, setActiveFolderId] = useState<string | null>(null)
+  const [folderMenuOpen, setFolderMenuOpen] = useState<string | null>(null)
+  const [newFolderName, setNewFolderName] = useState('')
+  const [addingFolder, setAddingFolder] = useState(false)
+
+  const displayed = activeFolderId === null
+    ? filteredSessions
+    : filteredSessions.filter((s) => s.folder_id === activeFolderId)
+
   return (
     <div className="flex-1 overflow-y-auto no-scrollbar py-8 px-6 mx-auto w-full max-w-5xl flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold font-helvetica tracking-tighter text-zinc-100">Chats</h1>
-          <p className="text-sm text-zinc-500 font-helvetica tracking-tighter mt-1">
-            Search, organize, rename, and remove sessions.
-          </p>
+          <p className="text-sm text-zinc-500 font-helvetica tracking-tighter mt-1">Search, organize, rename, and remove sessions.</p>
         </div>
         <div className="flex items-center gap-2">
           <div className="relative" ref={filterRef}>
-            <button
-              onClick={() => onFilterDropdownChange(!filterDropdownOpen)}
-              className="flex items-center gap-1.5 bg-[#1e1e1e] border border-zinc-800 rounded-lg px-4 py-2 text-xs text-zinc-300 hover:text-zinc-100 hover:border-zinc-700 transition-colors font-helvetica tracking-tighter"
-            >
-              <span>{filterMode}</span>
-              <ChevronDown className="w-3.5 h-3.5" />
+            <button onClick={() => onFilterDropdownChange(!filterDropdownOpen)} className="flex items-center gap-1.5 bg-[#1e1e1e] border border-zinc-800 rounded-lg px-4 py-2 text-xs text-zinc-300 hover:text-zinc-100 hover:border-zinc-700 transition-colors font-helvetica tracking-tighter">
+              <span>{filterMode}</span><ChevronDown className="w-3.5 h-3.5" />
             </button>
             {filterDropdownOpen && (
               <div className="absolute right-0 top-full mt-2 w-32 rounded-lg bg-[#171717] border border-zinc-800 shadow-2xl z-50 p-1">
                 {(['All', 'Active', 'Empty'] as const).map((option) => (
-                  <button
-                    key={option}
-                    onClick={() => {
-                      onFilterModeChange(option)
-                      onFilterDropdownChange(false)
-                    }}
-                    className={`w-full text-left px-3 py-2 text-xs rounded-md transition-colors ${
-                      filterMode === option ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-800'
-                    }`}
-                  >
-                    {option}
-                  </button>
+                  <button key={option} onClick={() => { onFilterModeChange(option); onFilterDropdownChange(false) }} className={`w-full text-left px-3 py-2 text-xs rounded-md transition-colors ${filterMode === option ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-800'}`}>{option}</button>
                 ))}
               </div>
             )}
           </div>
           {isSelectionMode ? (
             <>
-              <button
-                onClick={onDeleteSelected}
-                disabled={selectedSessions.size === 0}
-                className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-red-950/60 text-red-200 border border-red-900/60 disabled:opacity-40"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                Delete ({selectedSessions.size})
+              <button onClick={onDeleteSelected} disabled={selectedSessions.size === 0} className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-red-950/60 text-red-200 border border-red-900/60 disabled:opacity-40">
+                <Trash2 className="w-3.5 h-3.5" />Delete ({selectedSessions.size})
               </button>
-              <button
-                onClick={() => onSelectionModeChange(false)}
-                className="px-4 py-2 text-xs rounded-lg border border-zinc-800 text-zinc-300 hover:text-zinc-100"
-              >
-                Cancel
-              </button>
+              <button onClick={() => onSelectionModeChange(false)} className="px-4 py-2 text-xs rounded-lg border border-zinc-800 text-zinc-300 hover:text-zinc-100">Cancel</button>
             </>
           ) : (
-            <button
-              onClick={() => onSelectionModeChange(true)}
-              className="px-4 py-2 text-xs rounded-lg border border-zinc-800 text-zinc-300 hover:text-zinc-100"
-            >
-              Select
-            </button>
+            <button onClick={() => onSelectionModeChange(true)} className="px-4 py-2 text-xs rounded-lg border border-zinc-800 text-zinc-300 hover:text-zinc-100">Select</button>
           )}
-          <button
-            onClick={onCreateSession}
-            className="flex items-center gap-1.5 bg-zinc-100 text-zinc-900 hover:bg-zinc-200 rounded-lg px-4 py-2 text-xs font-semibold"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            New chat
+          <button onClick={onCreateSession} className="flex items-center gap-1.5 bg-zinc-100 text-zinc-900 hover:bg-zinc-200 rounded-lg px-4 py-2 text-xs font-semibold">
+            <Plus className="w-3.5 h-3.5" />New chat
           </button>
         </div>
       </div>
 
       <div className="relative">
         <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-        <input
-          type="text"
-          placeholder="Search by title or summary"
-          className="w-full bg-[#1b1b1b]/80 border border-zinc-800 rounded-lg pl-10 pr-4 py-3 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-700 font-helvetica tracking-tighter"
-          value={searchQuery}
-          onChange={(event) => onSearchChange(event.target.value)}
-        />
+        <input type="text" placeholder="Search by title or summary" className="w-full bg-[#1b1b1b]/80 border border-zinc-800 rounded-lg pl-10 pr-4 py-3 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-zinc-700 font-helvetica tracking-tighter" value={searchQuery} onChange={(e) => onSearchChange(e.target.value)} />
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <button onClick={() => setActiveFolderId(null)} className={`px-3 py-1.5 rounded-lg text-xs font-helvetica tracking-tighter transition-colors border ${activeFolderId === null ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'border-zinc-800 text-zinc-500 hover:text-zinc-300'}`}>All</button>
+        {folders.map((folder) => (
+          <div key={folder.id} className="relative group/folder flex items-center">
+            <button onClick={() => setActiveFolderId(folder.id === activeFolderId ? null : folder.id)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-helvetica tracking-tighter transition-colors border ${activeFolderId === folder.id ? 'bg-zinc-800 border-zinc-700 text-zinc-100' : 'border-zinc-800 text-zinc-500 hover:text-zinc-300'}`}>
+              <FolderOpen className="w-3 h-3" />{folder.name}
+            </button>
+            <div className="absolute -top-1 -right-1 hidden group-hover/folder:flex items-center gap-0.5 z-10">
+              <button onClick={(e) => { e.stopPropagation(); const n = window.prompt('Rename folder', folder.name); if (n) onRenameFolder(folder.id, n) }} className="w-4 h-4 rounded bg-zinc-800 border border-zinc-700 flex items-center justify-center hover:bg-zinc-700"><Pencil className="w-2.5 h-2.5 text-zinc-400" /></button>
+              <button onClick={(e) => { e.stopPropagation(); onDeleteFolder(folder.id); if (activeFolderId === folder.id) setActiveFolderId(null) }} className="w-4 h-4 rounded bg-zinc-800 border border-zinc-700 flex items-center justify-center hover:bg-red-900"><X className="w-2.5 h-2.5 text-zinc-400" /></button>
+            </div>
+          </div>
+        ))}
+        {addingFolder ? (
+          <input autoFocus value={newFolderName} onChange={(e) => setNewFolderName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && newFolderName.trim()) { onCreateFolder(newFolderName.trim()); setNewFolderName(''); setAddingFolder(false) } if (e.key === 'Escape') { setNewFolderName(''); setAddingFolder(false) } }}
+            onBlur={() => { if (newFolderName.trim()) onCreateFolder(newFolderName.trim()); setNewFolderName(''); setAddingFolder(false) }}
+            placeholder="Folder name" className="bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-zinc-600 font-helvetica w-28" />
+        ) : (
+          <button onClick={() => setAddingFolder(true)} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-zinc-800 text-xs text-zinc-600 hover:text-zinc-400 hover:border-zinc-700 transition-colors font-helvetica tracking-tighter">
+            <FolderPlus className="w-3 h-3" />New folder
+          </button>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {filteredSessions.length === 0 ? (
-          <div className="md:col-span-2 py-12 text-center text-zinc-500 text-sm">No chats found</div>
+        {displayed.length === 0 ? (
+          <div className="md:col-span-2 py-12 text-center text-zinc-500 text-sm font-helvetica">{activeFolderId ? 'No chats in this folder' : 'No chats found'}</div>
         ) : (
-          filteredSessions.map((session) => {
+          displayed.map((session) => {
             const isChecked = selectedSessions.has(session.id)
+            const assignedFolder = folders.find((f) => f.id === session.folder_id)
             return (
-              <div
-                key={session.id}
-                onClick={() => (isSelectionMode ? onToggleSessionSelection(session.id) : onSelectSession(session.id))}
-                className="group border border-zinc-800/80 bg-[#1b1b1b]/40 hover:bg-zinc-900/50 rounded-lg p-4 cursor-pointer transition-colors"
-              >
+              <div key={session.id} onClick={() => (isSelectionMode ? onToggleSessionSelection(session.id) : onSelectSession(session.id))} className={`group relative border rounded-lg p-4 cursor-pointer transition-colors ${session.pinned ? 'border-zinc-700 bg-zinc-900/50' : 'border-zinc-800/80 bg-[#1b1b1b]/40 hover:bg-zinc-900/50'}`}>
+                {session.pinned && <Pin className="absolute top-3 right-3 w-3 h-3 text-zinc-500" />}
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       {isSelectionMode && (
-                        <span
-                          className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
-                            isChecked ? 'bg-zinc-100 border-zinc-100 text-zinc-900' : 'border-zinc-600'
-                          }`}
-                        >
-                          {isChecked && <Check className="w-3 h-3" />}
-                        </span>
+                        <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${isChecked ? 'bg-zinc-100 border-zinc-100 text-zinc-900' : 'border-zinc-600'}`}>{isChecked && <Check className="w-3 h-3" />}</span>
                       )}
-                      <h2 className="truncate font-semibold text-zinc-100 text-sm">{session.title}</h2>
+                      <h2 className="truncate font-semibold text-zinc-100 text-sm pr-4">{session.title}</h2>
                     </div>
-                    <p className="text-xs text-zinc-500 mt-2">
-                      {(session.message_count || 0).toString()} messages - {formatRelativeTime(session.last_message_at || session.created_at)}
-                    </p>
+                    <div className="flex items-center gap-2 mt-2">
+                      <p className="text-xs text-zinc-500">{session.message_count ?? 0} messages · {formatRelativeTime(session.last_message_at ?? session.created_at)}</p>
+                      {assignedFolder && <span className="flex items-center gap-1 text-[10px] text-zinc-600 bg-zinc-800/60 border border-zinc-800 rounded px-1.5 py-0.5 font-helvetica"><FolderOpen className="w-2.5 h-2.5" />{assignedFolder.name}</span>}
+                    </div>
                   </div>
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        const title = window.prompt('Rename chat', session.title)
-                        if (title) onRenameSession(session.id, title)
-                      }}
-                      className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100"
-                    >
-                      <Pencil className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        onDeleteSession(session.id)
-                      }}
-                      className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-red-300"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); onPinSession(session.id) }} className={`p-1.5 rounded hover:bg-zinc-800 transition-colors ${session.pinned ? 'text-zinc-300' : 'text-zinc-500 hover:text-zinc-300'}`} title={session.pinned ? 'Unpin' : 'Pin'}><Pin className="w-3.5 h-3.5" /></button>
+                    <div className="relative">
+                      <button onClick={(e) => { e.stopPropagation(); setFolderMenuOpen(folderMenuOpen === session.id ? null : session.id) }} className="p-1.5 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors" title="Move to folder"><FolderOpen className="w-3.5 h-3.5" /></button>
+                      {folderMenuOpen === session.id && (
+                        <div className="absolute right-0 top-full mt-1 w-40 rounded-lg bg-[#171717] border border-zinc-800 shadow-xl z-50 p-1">
+                          <button onClick={(e) => { e.stopPropagation(); onSetSessionFolder(session.id, null); setFolderMenuOpen(null) }} className="w-full text-left px-3 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800 rounded-md font-helvetica">No folder</button>
+                          {folders.map((f) => <button key={f.id} onClick={(e) => { e.stopPropagation(); onSetSessionFolder(session.id, f.id); setFolderMenuOpen(null) }} className={`w-full text-left px-3 py-1.5 text-xs rounded-md font-helvetica ${session.folder_id === f.id ? 'text-zinc-100 bg-zinc-800' : 'text-zinc-400 hover:bg-zinc-800'}`}>{f.name}</button>)}
+                        </div>
+                      )}
+                    </div>
+                    <button onClick={(e) => { e.stopPropagation(); const t = window.prompt('Rename', session.title); if (t) onRenameSession(session.id, t) }} className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100"><Pencil className="w-3.5 h-3.5" /></button>
+                    <button onClick={(e) => { e.stopPropagation(); onDeleteSession(session.id) }} className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-red-300"><Trash2 className="w-3.5 h-3.5" /></button>
                   </div>
                 </div>
                 {session.summary && <p className="mt-3 line-clamp-2 text-xs text-zinc-500">{session.summary}</p>}
@@ -836,45 +1170,38 @@ function ProvidersView({
   onDelete: (id: string) => void
 }) {
   return (
-    <div className="flex-1 overflow-y-auto no-scrollbar py-8 px-6 mx-auto w-full max-w-5xl flex flex-col gap-6">
-      <div>
-        <h1 className="text-3xl font-bold font-helvetica tracking-tighter text-zinc-100">Providers</h1>
-        <p className="text-sm text-zinc-500 font-helvetica tracking-tighter mt-1">
-          Add hosted and local models without editing environment files.
-        </p>
-      </div>
-
+    <div className="flex-1 overflow-y-auto no-scrollbar pt-5 pb-8 px-6 mx-auto w-full max-w-5xl flex flex-col gap-4">
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4">
         <div className="flex flex-col gap-3">
           {providers.map((provider) => (
-            <div key={provider.id} className="border border-zinc-800 bg-[#1b1b1b]/40 rounded-lg p-4">
+            <div key={provider.id} className="border-2 border-zinc-800/60 bg-[#1b1b1b]/60 rounded-xl p-4 shadow-md">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <h2 className="font-semibold text-zinc-100 truncate">{provider.name}</h2>
                     {provider.is_active && (
-                      <span className="text-[10px] uppercase tracking-wide rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 px-2 py-0.5">
+                      <span className="text-[10px] uppercase tracking-wide rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 px-2 py-0.5">
                         Active
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-zinc-500 mt-1">{provider.provider_type}</p>
+                  <p className="text-xs text-zinc-600 mt-1">{provider.provider_type}</p>
                   <p className="text-sm text-zinc-300 mt-3 truncate">{provider.model}</p>
-                  {provider.base_url && <p className="text-xs text-zinc-500 mt-1 truncate">{provider.base_url}</p>}
-                  <p className="text-xs text-zinc-600 mt-1">
+                  {provider.base_url && <p className="text-xs text-zinc-600 mt-1 truncate">{provider.base_url}</p>}
+                  <p className="text-xs text-zinc-700 mt-1">
                     Key: {provider.api_key_masked || 'not set'}
                   </p>
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-0.5">
                   <button
                     onClick={() => onEdit(provider)}
-                    className="p-2 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100"
+                    className="p-2 rounded-lg hover:bg-zinc-800/60 text-zinc-600 hover:text-zinc-200 transition-colors"
                   >
                     <Pencil className="w-4 h-4" />
                   </button>
                   <button
                     onClick={() => onDelete(provider.id)}
-                    className="p-2 rounded hover:bg-zinc-800 text-zinc-400 hover:text-red-300"
+                    className="p-2 rounded-lg hover:bg-zinc-800/60 text-zinc-600 hover:text-red-400 transition-colors"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -884,19 +1211,23 @@ function ProvidersView({
           ))}
         </div>
 
-        <div className="border border-zinc-800 bg-[#1b1b1b]/40 rounded-lg p-4 h-fit">
-          <h2 className="font-semibold text-zinc-100 mb-4">{editingProviderId ? 'Edit provider' : 'Add provider'}</h2>
+        <div className="border-2 border-zinc-800/60 bg-[#1b1b1b]/60 rounded-xl p-4 h-fit shadow-md">
+          <h2 className="font-semibold text-zinc-100 mb-4 font-helvetica tracking-tight">{editingProviderId ? 'Edit provider' : 'Add provider'}</h2>
           <div className="flex flex-col gap-3">
             <input
               value={providerForm.name}
               onChange={(event) => onFormChange({ ...providerForm, name: event.target.value })}
               placeholder="Name"
-              className="bg-[#171717] border border-zinc-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-zinc-700"
+              className="bg-zinc-900/60 border-2 border-zinc-800/60 rounded-xl px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-700/80 shadow-sm transition-all"
             />
             <select
               value={providerForm.provider_type}
-              onChange={(event) => onFormChange({ ...providerForm, provider_type: event.target.value })}
-              className="bg-[#171717] border border-zinc-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-zinc-700"
+              onChange={(event) => {
+                const type = event.target.value
+                const base_url = type === 'ollama' ? (providerForm.base_url || 'http://localhost:11434/v1') : ''
+                onFormChange({ ...providerForm, provider_type: type, base_url })
+              }}
+              className="bg-zinc-900/60 border-2 border-zinc-800/60 rounded-xl px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-zinc-700/80 shadow-sm transition-all"
             >
               <option value="ollama">Ollama local</option>
               <option value="anthropic">Anthropic</option>
@@ -906,22 +1237,26 @@ function ProvidersView({
               value={providerForm.model}
               onChange={(event) => onFormChange({ ...providerForm, model: event.target.value })}
               placeholder="Model"
-              className="bg-[#171717] border border-zinc-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-zinc-700"
+              className="bg-zinc-900/60 border-2 border-zinc-800/60 rounded-xl px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-700/80 shadow-sm transition-all"
             />
-            <input
-              value={providerForm.base_url}
-              onChange={(event) => onFormChange({ ...providerForm, base_url: event.target.value })}
-              placeholder="Base URL"
-              className="bg-[#171717] border border-zinc-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-zinc-700"
-            />
-            <input
-              value={providerForm.api_key}
-              onChange={(event) => onFormChange({ ...providerForm, api_key: event.target.value })}
-              placeholder={editingProviderId ? 'New API key, optional' : 'API key'}
-              type="password"
-              className="bg-[#171717] border border-zinc-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-zinc-700"
-            />
-            <label className="flex items-center gap-2 text-sm text-zinc-400">
+            {(providerForm.provider_type === 'ollama' || providerForm.provider_type === 'openai_compatible') && (
+              <input
+                value={providerForm.base_url}
+                onChange={(event) => onFormChange({ ...providerForm, base_url: event.target.value })}
+                placeholder={providerForm.provider_type === 'ollama' ? 'http://localhost:11434/v1' : 'Base URL'}
+                className="bg-zinc-900/60 border-2 border-zinc-800/60 rounded-xl px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-700/80 shadow-sm transition-all"
+              />
+            )}
+            {providerForm.provider_type !== 'ollama' && (
+              <input
+                value={providerForm.api_key}
+                onChange={(event) => onFormChange({ ...providerForm, api_key: event.target.value })}
+                placeholder={editingProviderId ? 'New API key (leave blank to keep)' : 'API key'}
+                type="password"
+                className="bg-zinc-900/60 border-2 border-zinc-800/60 rounded-xl px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-700/80 shadow-sm transition-all"
+              />
+            )}
+            <label className="flex items-center gap-2 text-sm text-zinc-500">
               <input
                 type="checkbox"
                 checked={providerForm.is_active}
@@ -930,10 +1265,10 @@ function ProvidersView({
               Make active
             </label>
             <div className="flex items-center gap-2 pt-2">
-              <button onClick={onSave} className="bg-zinc-100 text-zinc-900 rounded-lg px-4 py-2 text-xs font-semibold">
+              <button onClick={onSave} className="bg-zinc-100 text-zinc-900 hover:bg-white rounded-lg px-4 py-2 text-xs font-semibold shadow-md transition-colors">
                 Save
               </button>
-              <button onClick={onCancel} className="border border-zinc-800 text-zinc-300 rounded-lg px-4 py-2 text-xs">
+              <button onClick={onCancel} className="border-2 border-zinc-800/60 text-zinc-400 hover:text-zinc-100 hover:border-zinc-700 rounded-lg px-4 py-2 text-xs shadow-md transition-all">
                 Clear
               </button>
             </div>

@@ -3,4 +3,11 @@ uvicorn[standard]
 python-dotenv
 anthropic
 openai
-psycopg2-binary
+httpx
+beautifulsoup4
+fastembed
+numpy
+pypdf
+python-docx
+python-multipart
+keyring

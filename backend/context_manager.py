@@ -73,7 +73,8 @@ async def summarize_overflow(
         
   
     prompt += (
-        "\nSTRICT FORMATTING RULES:\n"
+        "\nCRITICAL: Absolutely NO emojis or emoticons. Never use 😊, 🙂, 🎉, ✅, ❌, or any other emoji.\n"
+        "STRICT FORMATTING RULES:\n"
         "- Do NOT use emojis anywhere in your response.\n"
         "- Do NOT use em dashes anywhere in your response.\n"
     )

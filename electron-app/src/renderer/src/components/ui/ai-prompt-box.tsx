@@ -1,7 +1,9 @@
 import React from "react";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { ArrowUp, Paperclip, X, StopCircle, Mic, Globe, BrainCog, FolderCode, Pause } from "lucide-react";
+import { ArrowUp, Paperclip, X, StopCircle, Mic, Globe, BrainCog, Pause } from "lucide-react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Telescope01Icon } from "@hugeicons/core-free-icons";
 import { motion, AnimatePresence } from "framer-motion";
 
 // Utility function for className merging
@@ -285,6 +287,7 @@ interface PromptInputProps {
   onSubmit?: () => void;
   children: React.ReactNode;
   className?: string;
+  style?: React.CSSProperties;
   disabled?: boolean;
   onDragOver?: (e: React.DragEvent) => void;
   onDragLeave?: (e: React.DragEvent) => void;
@@ -294,6 +297,7 @@ const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
   (
     {
       className,
+      style,
       isLoading = false,
       maxHeight = 240,
       value,
@@ -326,6 +330,7 @@ const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
         >
           <div
             ref={ref}
+            style={style}
             className={cn(
               "rounded-3xl border border-[#444444] bg-[#1F2023] p-2 shadow-[0_8px_30px_rgba(0,0,0,0.24)] transition-all duration-300",
               isLoading && "border-red-500/70",
@@ -434,24 +439,113 @@ const CustomDivider: React.FC = () => (
   </div>
 );
 
+const DOC_EXTENSIONS = new Set([".pdf", ".txt", ".md", ".docx", ".csv"]);
+const isDocFile = (file: File) =>
+  DOC_EXTENSIONS.has("." + file.name.toLowerCase().split(".").pop()!);
+
+interface DocFileState {
+  file: File;
+  status: "indexing" | "ready" | "error";
+  chunks?: number;
+  errorMsg?: string;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function fileTypeBadge(filename: string): { label: string; bg: string; text: string } {
+  const ext = filename.toLowerCase().split(".").pop() || "";
+  if (ext === "pdf") return { label: "PDF", bg: "bg-purple-950/80", text: "text-purple-300" };
+  if (ext === "csv") return { label: "CSV", bg: "bg-green-950/80", text: "text-green-300" };
+  if (ext === "docx" || ext === "doc") return { label: "DOC", bg: "bg-blue-950/80", text: "text-blue-300" };
+  if (ext === "txt") return { label: "TXT", bg: "bg-zinc-800", text: "text-zinc-400" };
+  if (ext === "md") return { label: "MD", bg: "bg-zinc-800", text: "text-zinc-400" };
+  return { label: ext.toUpperCase().slice(0, 4), bg: "bg-zinc-800", text: "text-zinc-500" };
+}
+
+interface FileCardProps {
+  name: string;
+  size: number;
+  status: "indexing" | "ready" | "error";
+  statusText: string;
+  thumbnail?: string;
+  onRemove: () => void;
+  onPreview?: () => void;
+}
+
+function FileCard({ name, size, status, statusText, thumbnail, onRemove, onPreview }: FileCardProps) {
+  const badge = fileTypeBadge(name);
+  return (
+    <div className="inline-flex items-center gap-3 bg-transparent border-2 border-zinc-800/60 shadow-xl rounded-xl px-3 py-2.5">
+      <div className="shrink-0" onClick={onPreview}>
+        {thumbnail ? (
+          <div className={`w-10 h-10 rounded-lg overflow-hidden bg-zinc-800 ${onPreview ? "cursor-pointer" : ""}`}>
+            <img src={thumbnail} alt={name} className="w-full h-full object-cover" />
+          </div>
+        ) : (
+          <div className={`w-10 h-10 rounded-lg flex flex-col items-center justify-center ${badge.bg}`}>
+            <span className={`text-[10px] font-bold font-mono leading-none ${badge.text}`}>{badge.label}</span>
+          </div>
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-xs text-zinc-200 font-helvetica tracking-tighter truncate leading-snug">{name}</p>
+        <div className="flex items-center gap-1 mt-0.5">
+          <span className="text-[11px] text-zinc-500 font-helvetica">{formatFileSize(size)}</span>
+          <span className="text-[11px] text-zinc-700">–</span>
+          {status === "indexing" ? (
+            <motion.span
+              className="text-[11px] text-zinc-500 font-helvetica"
+              animate={{ opacity: [0.4, 1, 0.4] }}
+              transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
+            >
+              {statusText}
+            </motion.span>
+          ) : (
+            <span className={`text-[11px] font-helvetica ${status === "error" ? "text-red-500" : "text-zinc-500"}`}>
+              {statusText}
+            </span>
+          )}
+        </div>
+      </div>
+      <button
+        onClick={onRemove}
+        className="shrink-0 p-1 text-zinc-600 hover:text-zinc-400 transition-colors rounded-full hover:bg-zinc-800"
+      >
+        <X className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}
+
 // Main PromptInputBox Component
+interface DocSendInfo {
+  name: string;
+  chunks: number;
+}
+
 interface PromptInputBoxProps {
-  onSend?: (message: string, files?: File[]) => void;
+  onSend?: (message: string, files?: File[], docInfo?: DocSendInfo) => void;
   onStop?: () => void;
   isLoading?: boolean;
   placeholder?: string;
   className?: string;
+  onUploadDoc?: (file: File) => Promise<{ chunks: number; filename: string }>;
 }
 export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref: React.Ref<HTMLDivElement>) => {
-  const { onSend = () => {}, onStop = () => {}, isLoading = false, placeholder = "Type your message here...", className } = props;
+  const { onSend = () => {}, onStop = () => {}, isLoading = false, placeholder = "Type your message here...", className, onUploadDoc } = props;
   const [input, setInput] = React.useState("");
   const [files, setFiles] = React.useState<File[]>([]);
   const [filePreviews, setFilePreviews] = React.useState<{ [key: string]: string }>({});
+  const [docFile, setDocFile] = React.useState<DocFileState | null>(null);
   const [selectedImage, setSelectedImage] = React.useState<string | null>(null);
   const [isRecording, setIsRecording] = React.useState(false);
   const [showSearch, setShowSearch] = React.useState(false);
   const [showThink, setShowThink] = React.useState(false);
-  const [showCanvas, setShowCanvas] = React.useState(false);
+  const [showPlan, setShowPlan] = React.useState(false);
   const uploadInputRef = React.useRef<HTMLInputElement>(null);
   const promptBoxRef = React.useRef<HTMLDivElement>(null);
 
@@ -465,19 +559,25 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
     }
   };
 
-  const handleCanvasToggle = () => setShowCanvas((prev) => !prev);
+  const handlePlanToggle = () => setShowPlan((prev) => !prev);
 
   const isImageFile = (file: File) => file.type.startsWith("image/");
 
   const processFile = (file: File) => {
-    if (!isImageFile(file)) {
-      console.log("Only image files are allowed");
+    if (isDocFile(file)) {
+      if (file.size > 20 * 1024 * 1024) return;
+      setDocFile({ file, status: "indexing" });
+      if (onUploadDoc) {
+        onUploadDoc(file)
+          .then(({ chunks }) => setDocFile({ file, status: "ready", chunks }))
+          .catch((err) => setDocFile({ file, status: "error", errorMsg: err?.message || "Failed" }));
+      } else {
+        setDocFile({ file, status: "ready" });
+      }
       return;
     }
-    if (file.size > 10 * 1024 * 1024) {
-      console.log("File too large (max 10MB)");
-      return;
-    }
+    if (!isImageFile(file)) return;
+    if (file.size > 10 * 1024 * 1024) return;
     setFiles([file]);
     const reader = new FileReader();
     reader.onload = (e) => setFilePreviews({ [file.name]: e.target?.result as string });
@@ -498,9 +598,11 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
     e.preventDefault();
     e.stopPropagation();
     const droppedFiles = Array.from(e.dataTransfer.files);
-    const imageFiles = droppedFiles.filter((file) => isImageFile(file));
+    const docFiles = droppedFiles.filter(isDocFile);
+    if (docFiles.length > 0) { processFile(docFiles[0]); return; }
+    const imageFiles = droppedFiles.filter(isImageFile);
     if (imageFiles.length > 0) processFile(imageFiles[0]);
-  }, []);
+  }, [onUploadDoc]);
 
   const handleRemoveFile = (index: number) => {
     const fileToRemove = files[index];
@@ -531,17 +633,20 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
   }, [handlePaste]);
 
   const handleSubmit = () => {
-    if (input.trim() || files.length > 0) {
-      let messagePrefix = "";
-      if (showSearch) messagePrefix = "[Search: ";
-      else if (showThink) messagePrefix = "[Think: ";
-      else if (showCanvas) messagePrefix = "[Canvas: ";
-      const formattedInput = messagePrefix ? `${messagePrefix}${input}]` : input;
-      onSend(formattedInput, files);
-      setInput("");
-      setFiles([]);
-      setFilePreviews({});
-    }
+    const hasContent = input.trim() || files.length > 0 || (docFile && !input.trim());
+    if (!hasContent) return;
+    let messagePrefix = "";
+    if (showSearch) messagePrefix = "[Search: ";
+    else if (showThink) messagePrefix = "[Think: ";
+    else if (showPlan) messagePrefix = "[Plan: ";
+    const queryText = input.trim();
+    if (messagePrefix && !queryText) return;
+    const formattedInput = messagePrefix ? `${messagePrefix}${queryText}]` : queryText || (docFile ? `Tell me about the uploaded file: ${docFile.file.name}` : "");
+    onSend(formattedInput, files, docFile ? { name: docFile.file.name, chunks: docFile.chunks ?? 0 } : undefined);
+    setInput("");
+    setFiles([]);
+    setFilePreviews({});
+    setDocFile(null);
   };
 
   const handleStartRecording = () => console.log("Started recording");
@@ -552,7 +657,35 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
     onSend(`[Voice message - ${duration} seconds]`, []);
   };
 
-  const hasContent = input.trim() !== "" || files.length > 0;
+  const hasContent = input.trim() !== "" || files.length > 0 || docFile !== null;
+
+  const modeStyle = React.useMemo<React.CSSProperties>(() => {
+    if (isRecording || isLoading) return {
+      borderColor: 'rgba(239,68,68,0.7)',
+      boxShadow: '0 0 18px rgba(239,68,68,0.18), 0 0 40px rgba(239,68,68,0.08)',
+      transition: 'border-color 0.4s ease, box-shadow 0.4s ease',
+    };
+    if (showSearch) return {
+      borderColor: '#1EAEDB',
+      boxShadow: '0 0 18px rgba(30,174,219,0.22), 0 0 40px rgba(30,174,219,0.1)',
+      transition: 'border-color 0.4s ease, box-shadow 0.4s ease',
+    };
+    if (showThink) return {
+      borderColor: '#8B5CF6',
+      boxShadow: '0 0 18px rgba(139,92,246,0.22), 0 0 40px rgba(139,92,246,0.1)',
+      transition: 'border-color 0.4s ease, box-shadow 0.4s ease',
+    };
+    if (showPlan) return {
+      borderColor: '#F97316',
+      boxShadow: '0 0 18px rgba(249,115,22,0.22), 0 0 40px rgba(249,115,22,0.1)',
+      transition: 'border-color 0.4s ease, box-shadow 0.4s ease',
+    };
+    return {
+      borderColor: '#444444',
+      boxShadow: '0 8px 30px rgba(0,0,0,0.24)',
+      transition: 'border-color 0.4s ease, box-shadow 0.4s ease',
+    };
+  }, [showSearch, showThink, showPlan, isRecording, isLoading]);
 
   return (
     <>
@@ -561,9 +694,9 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
         onValueChange={setInput}
         isLoading={isLoading}
         onSubmit={handleSubmit}
+        style={modeStyle}
         className={cn(
-          "w-full bg-[#171717] border-2 border-[#444444] shadow-[0_8px_30px_rgba(0,0,0,0.24)] transition-all duration-300 ease-in-out",
-          isRecording && "border-red-500/70",
+          "w-full bg-[#171717] border-2 shadow-none",
           className
         )}
         disabled={isRecording}
@@ -572,33 +705,38 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
+        {docFile && !isRecording && (
+          <div className="pb-2 flex">
+            <FileCard
+              name={docFile.file.name}
+              size={docFile.file.size}
+              status={docFile.status}
+              statusText={
+                docFile.status === "indexing" ? "Indexing..."
+                  : docFile.status === "ready" ? `${docFile.chunks ?? 0} chunks indexed`
+                  : docFile.errorMsg || "Failed"
+              }
+              onRemove={() => setDocFile(null)}
+            />
+          </div>
+        )}
+
         {files.length > 0 && !isRecording && (
-          <div className="flex flex-wrap gap-2 p-0 pb-1 transition-all duration-300">
-            {files.map((file, index) => (
-              <div key={index} className="relative group">
-                {file.type.startsWith("image/") && filePreviews[file.name] && (
-                  <div
-                    className="w-16 h-16 rounded-xl overflow-hidden cursor-pointer transition-all duration-300"
-                    onClick={() => openImageModal(filePreviews[file.name])}
-                  >
-                    <img
-                      src={filePreviews[file.name]}
-                      alt={file.name}
-                      className="h-full w-full object-cover"
-                    />
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleRemoveFile(index);
-                      }}
-                      className="absolute top-1 right-1 rounded-full bg-black/70 p-0.5 opacity-100 transition-opacity"
-                    >
-                      <X className="h-3 w-3 text-white" />
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
+          <div className="flex flex-col items-start gap-1.5 pb-2">
+            {files.map((file, index) =>
+              file.type.startsWith("image/") && filePreviews[file.name] ? (
+                <FileCard
+                  key={index}
+                  name={file.name}
+                  size={file.size}
+                  status="ready"
+                  statusText="Image attached"
+                  thumbnail={filePreviews[file.name]}
+                  onRemove={() => handleRemoveFile(index)}
+                  onPreview={() => openImageModal(filePreviews[file.name])}
+                />
+              ) : null
+            )}
           </div>
         )}
 
@@ -614,8 +752,8 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
                 ? "Search the web..."
                 : showThink
                 ? "Think deeply..."
-                : showCanvas
-                ? "Create on canvas..."
+                : showPlan
+                ? "What do you want to research?"
                 : placeholder
             }
             className="text-base"
@@ -637,7 +775,7 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
               isRecording ? "opacity-0 invisible h-0" : "opacity-100 visible"
             )}
           >
-            <PromptInputAction tooltip="Upload image">
+            <PromptInputAction tooltip="Attach file (image, PDF, TXT, MD, DOCX, CSV)">
               <button
                 onClick={() => uploadInputRef.current?.click()}
                 className="flex h-8 w-8 text-[#9CA3AF] cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-gray-600/30 hover:text-[#D1D5DB]"
@@ -652,7 +790,7 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
                     if (e.target.files && e.target.files.length > 0) processFile(e.target.files[0]);
                     if (e.target) e.target.value = "";
                   }}
-                  accept="image/*"
+                  accept="image/*,.pdf,.txt,.md,.docx,.csv"
                 />
               </button>
             </PromptInputAction>
@@ -732,25 +870,25 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
 
               <button
                 type="button"
-                onClick={handleCanvasToggle}
+                onClick={handlePlanToggle}
                 className={cn(
                   "rounded-full transition-all flex items-center gap-1 px-2 py-1 border h-8",
-                  showCanvas
+                  showPlan
                     ? "bg-[#F97316]/15 border-[#F97316] text-[#F97316]"
                     : "bg-transparent border-transparent text-[#9CA3AF] hover:text-[#D1D5DB]"
                 )}
               >
                 <div className="w-5 h-5 flex items-center justify-center flex-shrink-0">
                   <motion.div
-                    animate={{ rotate: showCanvas ? 360 : 0, scale: showCanvas ? 1.1 : 1 }}
-                    whileHover={{ rotate: showCanvas ? 360 : 15, scale: 1.1, transition: { type: "spring", stiffness: 300, damping: 10 } }}
+                    animate={{ rotate: showPlan ? 360 : 0, scale: showPlan ? 1.1 : 1 }}
+                    whileHover={{ rotate: showPlan ? 360 : 15, scale: 1.1, transition: { type: "spring", stiffness: 300, damping: 10 } }}
                     transition={{ type: "spring", stiffness: 260, damping: 25 }}
                   >
-                    <FolderCode className={cn("w-4 h-4", showCanvas ? "text-[#F97316]" : "text-inherit")} />
+                    <HugeiconsIcon icon={Telescope01Icon} className={cn("w-4 h-4", showPlan ? "text-[#F97316]" : "text-inherit")} />
                   </motion.div>
                 </div>
                 <AnimatePresence>
-                  {showCanvas && (
+                  {showPlan && (
                     <motion.span
                       initial={{ width: 0, opacity: 0 }}
                       animate={{ width: "auto", opacity: 1 }}
@@ -758,7 +896,7 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
                       transition={{ duration: 0.2 }}
                       className="text-xs overflow-hidden whitespace-nowrap text-[#F97316] flex-shrink-0"
                     >
-                      Canvas
+                      Plan
                     </motion.span>
                   )}
                 </AnimatePresence>
