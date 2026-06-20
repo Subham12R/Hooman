@@ -1,7 +1,7 @@
 import React from "react";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { ArrowUp, Paperclip, Square, X, StopCircle, Mic, Globe, BrainCog, FolderCode } from "lucide-react";
+import { ArrowUp, Paperclip, X, StopCircle, Mic, Globe, BrainCog, FolderCode, Pause } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 // Utility function for className merging
@@ -437,12 +437,13 @@ const CustomDivider: React.FC = () => (
 // Main PromptInputBox Component
 interface PromptInputBoxProps {
   onSend?: (message: string, files?: File[]) => void;
+  onStop?: () => void;
   isLoading?: boolean;
   placeholder?: string;
   className?: string;
 }
 export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref: React.Ref<HTMLDivElement>) => {
-  const { onSend = () => {}, isLoading = false, placeholder = "Type your message here...", className } = props;
+  const { onSend = () => {}, onStop = () => {}, isLoading = false, placeholder = "Type your message here...", className } = props;
   const [input, setInput] = React.useState("");
   const [files, setFiles] = React.useState<File[]>([]);
   const [filePreviews, setFilePreviews] = React.useState<{ [key: string]: string }>({});
@@ -565,7 +566,7 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
           isRecording && "border-red-500/70",
           className
         )}
-        disabled={isLoading || isRecording}
+        disabled={isRecording}
         ref={ref || promptBoxRef}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -780,22 +781,30 @@ export const PromptInputBox = React.forwardRef((props: PromptInputBoxProps, ref:
               variant="default"
               size="icon"
               className={cn(
-                "h-8 w-8 rounded-full transition-all duration-200",
-                isRecording
+                "h-8 w-8 rounded-full transition-all duration-200 cursor-pointer",
+                isLoading
+                  ? "bg-white hover:bg-white/80 text-[#1F2023]"
+                  : isRecording
                   ? "bg-transparent hover:bg-gray-600/30 text-red-500 hover:text-red-400"
                   : hasContent
                   ? "bg-white hover:bg-white/80 text-[#1F2023]"
                   : "bg-transparent hover:bg-gray-600/30 text-[#9CA3AF] hover:text-[#D1D5DB]"
               )}
               onClick={() => {
-                if (isRecording) setIsRecording(false);
-                else if (hasContent) handleSubmit();
-                else setIsRecording(true);
+                if (isLoading) {
+                  onStop?.();
+                } else if (isRecording) {
+                  setIsRecording(false);
+                } else if (hasContent) {
+                  handleSubmit();
+                } else {
+                  setIsRecording(true);
+                }
               }}
-              disabled={isLoading && !hasContent}
+              disabled={false}
             >
               {isLoading ? (
-                <Square className="h-4 w-4 fill-[#1F2023] animate-pulse" />
+                <Pause className="h-4 w-4 fill-[#1F2023] text-[#1F2023]" />
               ) : isRecording ? (
                 <StopCircle className="h-5 w-5 text-red-500" />
               ) : hasContent ? (

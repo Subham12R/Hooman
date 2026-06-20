@@ -1,17 +1,25 @@
-import { useState, useRef, useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
-export const MODELS = [
-  { id: 'claude-opus-4-8',          label: 'Claude Opus 4.8',    short: 'Opus 4.8'    },
-  { id: 'claude-sonnet-4-6',        label: 'Claude Sonnet 4.6',  short: 'Sonnet 4.6'  },
-  { id: 'claude-haiku-4-5-20251001',label: 'Claude Haiku 4.5',   short: 'Haiku 4.5'   },
-]
-
-interface Props {
-  value: string
-  onChange: (model: string) => void
+export type ProviderOption = {
+  id: string
+  name: string
+  provider_type: string
+  model: string
+  is_active: boolean
 }
 
-export function ModelSelector({ value, onChange }: Props) {
+interface Props {
+  providers: ProviderOption[]
+  value: string | null
+  onChange: (providerId: string) => void
+}
+
+function shortName(provider: ProviderOption | undefined): string {
+  if (!provider) return 'Provider'
+  return provider.model || provider.name
+}
+
+export function ModelSelector({ providers, value, onChange }: Props) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -23,41 +31,49 @@ export function ModelSelector({ value, onChange }: Props) {
     return () => document.removeEventListener('mousedown', onClickOutside)
   }, [])
 
-  const current = MODELS.find(m => m.id === value) ?? MODELS[1]
+  const current = providers.find((provider) => provider.id === value) ?? providers[0]
 
   return (
     <div className="relative" ref={ref}>
       <button
-        onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-1.5 font-helvetica tracking-tighter text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+        onClick={() => setOpen((next) => !next)}
+        className="flex items-center gap-1.5 font-helvetica tracking-tighter text-lg text-zinc-400 hover:text-zinc-200 transition-colors"
       >
+        <span>{shortName(current)}</span>
         <svg
           className={`w-3 h-3 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
-          viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5"
-          >
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+        >
           <path d="M2 4l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
-          <span>{current.short}</span>
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-52 rounded-xl bg-[#171717] border-2 border-zinc-800 shadow-2xl z-50 overflow-hidden p-1 gap-2">
-          {MODELS.map(model => ( 
-            <button
-              key={model.id}
-              onClick={() => { onChange(model.id); setOpen(false) }}
-              className={`w-full text-left px-4 py-2.5 text-sm font-helvetica tracking-tighter transition-colors hover:bg-zinc-800 rounded-md  ${
-                model.id === value
-                  ? 'text-zinc-100 '
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              {model.label}
-              {model.id === value && (
-                <span className="float-right text-zinc-500 text-xs mt-0.5">✓</span>
-              )}
-            </button>
-          ))}
+        <div className="absolute left-0 top-full mt-2 w-64 rounded-xl bg-[#171717] border-2 border-zinc-800 shadow-2xl z-50 overflow-hidden p-1">
+          {providers.length === 0 ? (
+            <div className="px-4 py-3 text-sm text-zinc-500 font-helvetica tracking-tighter">
+              No providers configured
+            </div>
+          ) : (
+            providers.map((provider) => (
+              <button
+                key={provider.id}
+                onClick={() => {
+                  onChange(provider.id)
+                  setOpen(false)
+                }}
+                className={`w-full text-left px-4 py-2.5 text-sm font-helvetica tracking-tighter transition-colors hover:bg-zinc-800 rounded-md ${
+                  provider.id === current?.id ? 'text-zinc-100' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                <span className="block truncate">{provider.name}</span>
+                <span className="block truncate text-xs text-zinc-500">{provider.model}</span>
+              </button>
+            ))
+          )}
         </div>
       )}
     </div>
