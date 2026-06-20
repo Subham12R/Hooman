@@ -4,10 +4,9 @@ from typing import List, Dict, Tuple
 from providers.registry import get_provider
 from database import update_session_summary
 
-TOKEN_BUDGET = 6000  
+TOKEN_BUDGET = 32000  
 def estimate_tokens(text: str) -> int:
-    
-    return len(text) // 4
+    return int(len(text.split()) * 1.3)
 
 def build_context(
     messages: List[Dict], 
@@ -68,7 +67,15 @@ async def summarize_overflow(
     else:
         prompt = (
             f"Here is the conversation text so far:\n{messages_text}\n"
-            "Please write a concise summary of this conversation.\n"
+            "Summarize the conversation preserving:\n\n"
+            "- User goals\n"
+            "- Uploaded files\n"
+            "- Decisions made\n"
+            "- Important facts\n"
+            "- Open tasks\n"
+            "- Technical details\n"
+            "- Names of projects\n"
+            "Do not remove information that may be useful in future responses."
         )
         
   

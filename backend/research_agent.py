@@ -13,8 +13,8 @@ logger = logging.getLogger("hooman.research")
 
 SERPER_URL = "https://google.serper.dev/search"
 FETCH_TIMEOUT = 8
-MAX_FETCH_PER_QUERY = 2
-MAX_CONTENT_CHARS = 1200
+MAX_FETCH_PER_QUERY = 5
+MAX_CONTENT_CHARS = 8000
 
 
 async def _emit(websocket: WebSocket, session_id: str, request_id: str, stage: str, status: str, data: dict | None = None):
@@ -35,7 +35,13 @@ async def _plan_queries(provider, query: str) -> list[str]:
         {
             "role": "user",
             "content": (
-                f"Generate 3 to 5 focused, specific sub-queries to thoroughly research the following topic.\n"
+                f"Generate 5 research queries covering: \n\n"
+                "- Background\n"
+                "- Recent developments\n"
+                "- Technical details\n"
+                "- Criticisms\n"
+                "- Future outlook\n"
+                "\nReturn JSON array only."
                 f"Topic: {query}\n\n"
                 "Return ONLY a JSON array of strings, nothing else. Example: [\"sub-query 1\", \"sub-query 2\"]"
             ),
@@ -168,7 +174,16 @@ async def run_research_agent(websocket: WebSocket, session_id: str, request_id: 
                 "role": "system",
                 "content": (
                     "You are a research synthesizer. Write a clear, structured report answering the user's question. "
-                    "Use inline citation markers like [1], [2] when referencing sources. "
+                    "You are a senior research analyst.\n\n"
+                    "Requirements:\n"
+                    "1. Executive Summary\n"
+                    "2. Key Findings\n"
+                    "3. Detailed Analysis\n"
+                    "4. Contradictory Evidence\n"
+                    "5. Conclusions\n"
+                    "6. References\n"
+                    "Cite every factual claim using [1], [2], etc.\n"
+                    "Distinguish facts from interpretation.\n"
                     "End with a numbered References section. "
                     "Do not use emojis. Do not use em dashes. Use plain markdown with ## for section headers."
                 ),

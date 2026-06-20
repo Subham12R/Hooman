@@ -1,5 +1,5 @@
-appId: com.electron.app
-productName: electron-app
+appId: com.subham12r.hooman
+productName: Hooman
 directories:
   buildResources: build
 files:
@@ -12,13 +12,19 @@ files:
 asarUnpack:
   - resources/**
 win:
-  executableName: electron-app
+  executableName: Hooman
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
 mac:
+  target:
+      - dmg
+      - zip
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
@@ -27,17 +33,21 @@ mac:
     - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
   notarize: false
 dmg:
-  artifactName: ${name}-${version}.${ext}
+  artifactName: Hooman-${version}-${arch}.${ext}
 linux:
   target:
     - AppImage
     - snap
     - deb
-  maintainer: electronjs.org
+  maintainer: subham12r.me
   category: Utility
 appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
 publish:
-  provider: generic
-  url: https://example.com/auto-updates
+  provider: github
+  owner: Subham12R
+  repo: Hooman
+extraResources:
+  - from: ../backend/dist/hooman-server
+    to: backend/hooman-server

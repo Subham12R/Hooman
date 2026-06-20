@@ -547,3 +547,13 @@ async def chat_ws(websocket: WebSocket):
         logger.warning(f"WebSocket closed: {e}")
         for task in tasks.values():
             task.cancel()
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=8000,
+        log_level="info",
+    )

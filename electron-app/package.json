@@ -1,10 +1,9 @@
 {
-  "name": "electron-app",
+  "name": "Hooman",
   "version": "1.0.0",
-  "description": "An Electron application with React and TypeScript",
+  "description": "Agentic RAG",
   "main": "./out/main/index.js",
-  "author": "example.com",
-  "homepage": "https://electron-vite.org",
+  "author": "subham12r.me",
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",
@@ -53,7 +52,7 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
-    "electron": "^39.2.6",
+    "electron": "^39.8.10",
     "electron-builder": "^26.0.12",
     "electron-vite": "^5.0.0",
     "eslint": "^9.39.1",
@@ -65,5 +64,11 @@
     "react-dom": "^19.2.1",
     "typescript": "^5.9.3",
     "vite": "^7.2.6"
+  },
+  "allowScripts": {
+    "electron@39.8.10": true,
+    "electron-winstaller@5.4.0": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.27.7": true
   }
 }
