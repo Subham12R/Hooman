@@ -2,6 +2,15 @@
 
 **Hooman** is a local-first desktop AI assistant with multi-model support, RAG, web research, and a clean chat interface — all running on your machine.
 
+
+Research Agent Pipeline
+
+1. Generate focused research subqueries using the selected LLM provider.
+2. Search the web via Serper API.
+3. Fetch and extract relevant page content.
+4. Synthesize findings into a structured report with citations.
+5. Persist conversation history and embed generated reports for future retrieval.
+
 ```mermaid
 graph TD
     subgraph Frontend["Electron + React App"]
