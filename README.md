@@ -365,7 +365,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    TXT[User sends<br/>[Think: ...]] --> MODE[Detect: think mode]
+    TXT["User sends<br/>[Think: ...]"] --> MODE[Detect: think mode]
     MODE --> STEPS[Workflow steps]
     STEPS --> P1[Parsing the problem]
     P1 --> P2[Reviewing conversation context]
@@ -386,7 +386,7 @@ Same as chat mode but with a different system prompt that instructs the LLM to:
 
 ```mermaid
 flowchart TD
-    TXT[User sends<br/>[Search: query] or [Plan: query]]
+    TXT["User sends<br/>[Search: query] or [Plan: query]"]
 
     TXT --> MODE[Detect: research mode]
     MODE --> PLAN[Stage 1: Plan<br/>_plan_queries]
